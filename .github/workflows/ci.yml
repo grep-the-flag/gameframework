@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [develop]
+  # Manual/redeploy fallback: run CI + publish for develop again, e.g. after a
+  # release/* branch is deleted (dispatched by redeploy-on-release-delete.yml).
+  workflow_dispatch:
 
 jobs:
   backend-lint:
@@ -32,6 +35,19 @@ jobs:
           python-version: "3.12"
       - run: uv sync
       - run: uv run pytest
+
+  backend-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9   # v9.0.0
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - run: uv run pyright
 
   frontend-lint:
     runs-on: ubuntu-latest
@@ -63,6 +79,41 @@ jobs:
       - run: npm ci
       - run: npm run test
 
+  frontend-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+
+  # Stabilisation lock (git-workflow.md): while any release/* branch exists,
+  # develop must not be published to staging.
+  release-lock:
+    runs-on: ubuntu-latest
+    outputs:
+      locked: ${{ steps.check.outputs.locked }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh api "repos/${GITHUB_REPOSITORY}/branches" --paginate \
+            --jq '[.[].name | select(startswith("release/"))] | length')
+          if [ "$count" -gt 0 ]; then
+            echo "locked=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::publish skipped — $count open release/* branch(es) hold the stabilisation lock"
+          else
+            echo "locked=false" >> "$GITHUB_OUTPUT"
+          fi
+
   docker-build:
     runs-on: ubuntu-latest
     needs: [backend-test, frontend-test]
@@ -79,9 +130,17 @@ jobs:
           push: false
 
   publish:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    if: >-
+      github.ref == 'refs/heads/develop' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.release-lock.outputs.locked == 'false'
     runs-on: ubuntu-latest
-    needs: [backend-lint, backend-test, frontend-lint, frontend-test]
+    needs: [backend-lint, backend-test, backend-typecheck, frontend-lint, frontend-test, frontend-typecheck, release-lock]
+    # One publish at a time, in order; never cancel a half-finished
+    # sign/attest sequence (deployment concurrency lock, git-workflow.md).
+    concurrency:
+      group: publish-develop-${{ matrix.component }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -98,6 +157,21 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Build locally first: the Trivy gate (ADR-0016) runs BEFORE anything is pushed.
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a   # v7.3.0
+        with:
+          context: ${{ matrix.component }}
+          target: prod
+          load: true
+          tags: local/gameframework-${{ matrix.component }}:scan
+      - name: Trivy scan (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
+        with:
+          image-ref: local/gameframework-${{ matrix.component }}:scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
       - id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a   # v7.3.0
         with:
@@ -114,6 +188,20 @@ jobs:
         with:
           subject-name: ghcr.io/grep-the-flag/gameframework-${{ matrix.component }}
           subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610   # v0.24.0
+        with:
+          image: ghcr.io/grep-the-flag/gameframework-${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.component }}.spdx.json
+          upload-artifact: false
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v3
+        with:
+          subject-name: ghcr.io/grep-the-flag/gameframework-${{ matrix.component }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom-${{ matrix.component }}.spdx.json
           push-to-registry: true
       - name: Verify signature
         run: |

@@ -11,5 +11,5 @@ FROM deps AS build
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine AS prod
+FROM nginxinc/nginx-unprivileged:alpine AS prod
 COPY --from=build /app/dist /usr/share/nginx/html

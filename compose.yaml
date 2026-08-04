@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gameframework}
       POSTGRES_DB: ${POSTGRES_DB:-gameframework}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - dbdata:/var/lib/postgresql/data
     healthcheck:
@@ -20,9 +20,9 @@ services:
       context: backend
       target: dev
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://gameframework:gameframework@db:5432/gameframework}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-gameframework}:${POSTGRES_PASSWORD:-gameframework}@db:5432/${POSTGRES_DB:-gameframework}}
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./backend/src:/app/src
     depends_on:
@@ -34,7 +34,7 @@ services:
       context: frontend
       target: dev
     ports:
-      - "5173:5173"
+      - "${FRONTEND_PORT:-5173}:5173"
     volumes:
       - ./frontend/src:/app/src
 

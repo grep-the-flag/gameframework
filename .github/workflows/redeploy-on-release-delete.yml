@@ -1,0 +1,23 @@
+# Closes the documented stabilisation-lock gap (git-workflow.md): the
+# carry-back merge to develop happens while release/* still exists, so its
+# publish is skipped by the release lock — and deleting the branch triggers
+# no push. This workflow re-runs ci (incl. publish) for develop when a
+# release/* branch is deleted, so staging leaves the release build without
+# waiting for an unrelated push.
+name: redeploy-on-release-delete
+
+on:
+  delete:
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    if: github.event.ref_type == 'branch' && startsWith(github.event.ref, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run ci for develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref develop

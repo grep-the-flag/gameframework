@@ -14,6 +14,7 @@ dev = [
     "pytest-cov>=5",
     "httpx>=0.27",
     "ruff>=0.6",
+    "pyright>=1.1",
 ]
 
 [build-system]
@@ -29,6 +30,17 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.12"
+# src stays strict; tests relax the unknown-type rules because Starlette's
+# TestClient is only partially typed — strict would fail on its unknowns,
+# not on our code.
+executionEnvironments = [
+    { root = "tests", reportUnknownMemberType = false, reportUnknownVariableType = false, reportUnknownArgumentType = false },
+]
 
 [tool.pytest.ini_options]
 addopts = "--cov=gameframework --cov-report=term-missing --cov-fail-under=90"

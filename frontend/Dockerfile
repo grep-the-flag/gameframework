@@ -13,3 +13,4 @@ RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:alpine AS prod
 COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 8080

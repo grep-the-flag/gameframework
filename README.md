@@ -30,3 +30,15 @@ uv run pytest
 npm ci
 npm run test
 ```
+
+## License and support
+
+Gameframework is released under the [Apache License 2.0](LICENSE).
+
+It is a community-maintained open-source project: support runs through
+GitHub issues on a best-effort basis — no SLA, and no live operational
+support during events; operators run and are responsible for their own
+infrastructure. See the org-wide
+[SUPPORT.md](https://github.com/grep-the-flag/.github/blob/main/SUPPORT.md).
+Report security issues privately per
+[SECURITY.md](https://github.com/grep-the-flag/.github/blob/main/SECURITY.md).

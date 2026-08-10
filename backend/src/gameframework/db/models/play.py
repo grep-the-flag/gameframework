@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Enum, ForeignKey, Index, UniqueConstraint, func, text
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gameframework.db.base import Base
@@ -74,6 +74,9 @@ class ScoreEntry(Base):
     """§3.14"""
 
     __tablename__ = "score_entry"
+    __table_args__ = (
+        CheckConstraint("points_delta != 0", name="ck_score_entry_points_delta_nonzero"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     event_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("event_run.id"))

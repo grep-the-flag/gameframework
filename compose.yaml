@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-gameframework}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gameframework}
@@ -20,11 +20,14 @@ services:
       context: backend
       target: dev
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-gameframework}:${POSTGRES_PASSWORD:-gameframework}@db:5432/${POSTGRES_DB:-gameframework}}
+      GF_DATABASE_URL: ${GF_DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-gameframework}:${POSTGRES_PASSWORD:-gameframework}@db:5432/${POSTGRES_DB:-gameframework}}
+    command: sh -c "uv run alembic upgrade head && uv run uvicorn gameframework.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./backend/src:/app/src
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/migrations:/app/migrations
     depends_on:
       db:
         condition: service_healthy

@@ -1,3 +1,4 @@
 # Local environment overrides for the Compose dev stack — copy from
 # .env.example, never commit real credentials.
 .env
+AGENTS.md

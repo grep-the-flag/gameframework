@@ -28,6 +28,28 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_USER: gameframework
+          POSTGRES_PASSWORD: gameframework
+          POSTGRES_DB: gameframework
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gameframework"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # The postgres image's bootstrap role (POSTGRES_USER, here not the
+      # default "postgres" name) is created as the instance superuser, so it
+      # has CREATEDB — required because tests/db's fixture creates and drops
+      # scratch databases of its own for the migration-chain tests. Same name
+      # (GF_DATABASE_URL) as .env.example and compose.yaml, so the repo has
+      # one variable rather than a per-context alias.
+      GF_DATABASE_URL: postgresql+psycopg://gameframework:gameframework@localhost:5432/gameframework
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9   # v9.0.0

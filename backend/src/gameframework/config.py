@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GF_")
 
     database_url: str
+    frontend_origin: str
 
 
 @lru_cache

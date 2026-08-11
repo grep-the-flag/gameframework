@@ -50,6 +50,11 @@ jobs:
       # (GF_DATABASE_URL) as .env.example and compose.yaml, so the repo has
       # one variable rather than a per-context alias.
       GF_DATABASE_URL: postgresql+psycopg://gameframework:gameframework@localhost:5432/gameframework
+      # frontend_origin has no default (M2 Task 2): a misconfigured install
+      # must fail at startup rather than silently trust a documentation
+      # domain. CI supplies its own test value the same way it supplies
+      # GF_DATABASE_URL above.
+      GF_FRONTEND_ORIGIN: https://app.event.example.com
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9   # v9.0.0

@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.115",
     "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.15.0",
+    "pyjwt>=2.13.0",
     "sqlalchemy>=2.0.51",
     "uvicorn[standard]>=0.30",
 ]

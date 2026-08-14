@@ -64,6 +64,11 @@ jobs:
       # any writable path is equally correct; this is a throwaway value,
       # not an operator choice the way the volume in compose.yaml is.
       GF_DATA_DIR: /tmp/gameframework-data
+      # cookie_domain has no default either (M2 Task 3 Step 4, ADR-0007,
+      # api-surface.md §2.2): the session cookie's `Domain=` attribute is
+      # derived from it. Bare domain, no leading dot — the app supplies
+      # the dot itself.
+      GF_COOKIE_DOMAIN: event.example.com
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9   # v9.0.0

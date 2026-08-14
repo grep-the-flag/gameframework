@@ -5,6 +5,7 @@ description = "Gameframework core backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.19.1",
+    "argon2-cffi>=25.1.0",
     "fastapi>=0.115",
     "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.15.0",
@@ -35,6 +36,20 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008 (function-call-in-default-argument) exempts immutable-typed
+# parameters automatically, which is why `key: str | None =
+# Depends(idempotency_key)` (Task 2) never tripped it — `str` is
+# immutable. FastAPI's own DI pattern always calls `Depends(...)` in a
+# default, and Task 3 is the first place it lands on a non-immutable
+# type (Session, Settings, AuthContext) — the canonical fix upstream
+# ruff/FastAPI docs give for exactly this.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.params.Depends",
+    "gameframework.api.deps.current_session",
+]
 
 [tool.pyright]
 include = ["src", "tests"]

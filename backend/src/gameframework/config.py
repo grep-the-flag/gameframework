@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     database_url: str
     frontend_origin: str
     data_dir: Path
+    cookie_domain: str
 
 
 @lru_cache

@@ -39,12 +39,14 @@ class ProblemError(Exception):
         code: str,
         detail: str | None = None,
         fields: Sequence[FieldError] | None = None,
+        extensions: dict[str, object] | None = None,
     ) -> None:
         super().__init__(detail or code)
         self.status = status
         self.code = code
         self.detail = detail
         self.fields = fields
+        self.extensions = extensions
 
 
 class RateLimitError(ProblemError):
@@ -89,6 +91,8 @@ async def problem_error_handler(request: Request, exc: Exception) -> JSONRespons
         body["detail"] = exc.detail
     if exc.fields is not None:
         body["fields"] = list(exc.fields)
+    if exc.extensions is not None:
+        body.update(exc.extensions)
     headers = {REQUEST_ID_HEADER: request_id}
     if isinstance(exc, RateLimitError):
         headers["Retry-After"] = str(exc.retry_after)

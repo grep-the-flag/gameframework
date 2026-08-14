@@ -10,7 +10,12 @@ from gameframework.db.base import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers defaults to True, which would silently
+    # switch off every application logger already instantiated at the
+    # time migrations run — alembic.ini's [loggers] section names only
+    # root/sqlalchemy/alembic, so anything under `gameframework.*` goes
+    # dark (M2-Task-Plan.md Task 3 Step 3).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -55,6 +55,20 @@ jobs:
       # domain. CI supplies its own test value the same way it supplies
       # GF_DATABASE_URL above.
       GF_FRONTEND_ORIGIN: https://app.event.example.com
+      # data_dir has no default either (M2 Task 3, ADR-0007): the framework
+      # draws the session-signing key into a file there, and that file is
+      # the one thing conftest.py's `from gameframework.main import app`
+      # needs to succeed at collection — every test in this job, not just
+      # auth, would otherwise fail before running. CI has no persistence
+      # requirement to weigh (the runner is thrown away after the job), so
+      # any writable path is equally correct; this is a throwaway value,
+      # not an operator choice the way the volume in compose.yaml is.
+      GF_DATA_DIR: /tmp/gameframework-data
+      # cookie_domain has no default either (M2 Task 3 Step 4, ADR-0007,
+      # api-surface.md §2.2): the session cookie's `Domain=` attribute is
+      # derived from it. Bare domain, no leading dot — the app supplies
+      # the dot itself.
+      GF_COOKIE_DOMAIN: event.example.com
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9   # v9.0.0

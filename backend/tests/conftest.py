@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -171,8 +172,38 @@ def fresh_install_db(template_db_url: URL) -> Iterator[Session]:
         admin_engine.dispose()
 
 
-@pytest.fixture()
-def client(db_session: Session) -> Iterator[TestClient]:
+class _CsrfInjectingTestClient(TestClient):
+    """`client`'s own class (M2-Task-Plan.md Task 3 Step 6): every
+    mutating request gets a live `X-CSRF-Token` for free, fetched from
+    `GET /auth/csrf` on this same client — sharing its cookie jar, so the
+    token binds to whatever `sid` or pre-session cookie the jar already
+    holds — unless the caller already set the header. The fix belongs
+    here, in the fixture, rather than at each of the login matrix's and
+    the lifecycle suite's own call sites: a helper each author has to
+    remember to call would let a forgotten one read as a bug in the
+    route instead of a missing test-fixture call.
+    """
+
+    _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def request(self, method: str, url: Any, **kwargs: Any) -> Any:
+        if method.upper() in self._MUTATING_METHODS:
+            headers = httpx.Headers(kwargs.get("headers"))
+            if "x-csrf-token" not in headers:
+                token_response = self.get("/api/v1/auth/csrf")
+                if token_response.status_code != 200:
+                    raise AssertionError(
+                        "client fixture: GET /auth/csrf returned "
+                        f"{token_response.status_code}, expected 200 — "
+                        f"body: {token_response.text}"
+                    )
+                token = token_response.json()["csrf_token"]
+                headers["X-CSRF-Token"] = token
+                kwargs["headers"] = headers
+        return super().request(method, url, **kwargs)
+
+
+def _test_client(db_session: Session, client_cls: type[TestClient]) -> Iterator[TestClient]:
     """The HTTPS API client every route test drives, at
     `https://app.event.example.com` — matching ADR-0007's domain-wide cookie
     (`Domain=.event.example.com`) and the `__Host-`-prefixed pre-session
@@ -186,6 +217,26 @@ def client(db_session: Session) -> Iterator[TestClient]:
     assertions read one transaction. Task 1a ships no route to prove that
     with; verified instead with a temporary diagnostic route added directly
     to `app` — see the Step 2 report for the method and result.
+    """
+
+    def override_get_session() -> Iterator[Session]:
+        yield db_session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        with client_cls(app, base_url="https://app.event.example.com") as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture()
+def raw_client(db_session: Session) -> Iterator[TestClient]:
+    """The plain client, with no CSRF injection — what `test_csrf.py` and
+    `test_restricted_session.py` drive instead of `client`: every test in
+    those two files asserts something about a token being absent, wrong
+    or hand-minted, so an injecting client would destroy every one of
+    them (Task 3 Step 6).
 
     Raw duplicate cookies (Task 3's duplicate-session-cookie rejection):
     pass `headers={"Cookie": "a=1; a=2"}` on that one call. httpx never
@@ -201,16 +252,17 @@ def client(db_session: Session) -> Iterator[TestClient]:
     test uses `client.cookies`, the normal jar, which does not have this
     problem because it never sets a literal header itself.
     """
+    yield from _test_client(db_session, TestClient)
 
-    def override_get_session() -> Iterator[Session]:
-        yield db_session
 
-    app.dependency_overrides[get_session] = override_get_session
-    try:
-        with TestClient(app, base_url="https://app.event.example.com") as test_client:
-            yield test_client
-    finally:
-        app.dependency_overrides.pop(get_session, None)
+@pytest.fixture()
+def client(db_session: Session) -> Iterator[TestClient]:
+    """The injecting client (`_CsrfInjectingTestClient` above) every
+    non-CSRF-specific route test drives: a mutating call gets a live
+    token for free, so the login matrix and the session-lifecycle suite
+    need not fetch or attach one themselves.
+    """
+    yield from _test_client(db_session, _CsrfInjectingTestClient)
 
 
 # --------------------------------------------------------------------------

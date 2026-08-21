@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -8,6 +9,8 @@ class Settings(BaseSettings):
 
     database_url: str
     frontend_origin: str
+    data_dir: Path
+    cookie_domain: str
 
 
 @lru_cache

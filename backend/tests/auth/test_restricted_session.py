@@ -104,37 +104,37 @@ def _restricted_user(db_session: Session, *, password: str) -> User:
     )
 
 
-def test_restricted_session_reaches_get_session(client: TestClient, db_session: Session) -> None:
+def test_restricted_session_reaches_get_session(raw_client: TestClient, db_session: Session) -> None:
     """Already true today: nothing has ever gated `GET /auth/session` on
     `restricted`, and it must stay that way once Step 6 adds the gate for
     the routes that are not on the allowlist.
     """
     user = _restricted_user(db_session, password="Staff-Passw0rd!")
-    _authenticate(client, db_session, user)
+    _authenticate(raw_client, db_session, user)
 
-    response = client.get("/api/v1/auth/session")
+    response = raw_client.get("/api/v1/auth/session")
 
     assert response.status_code == 200
     assert response.json()["must_change_password"] is True
 
 
-def test_restricted_session_reaches_get_csrf(client: TestClient, db_session: Session) -> None:
+def test_restricted_session_reaches_get_csrf(raw_client: TestClient, db_session: Session) -> None:
     """`GET /auth/csrf` is on the allowlist specifically so the forced
     change can obtain the token `POST /auth/password` requires (ADR-0007
     Onboarding) — this only proves the route answers a restricted caller,
     not that the token it returns then works there (the next test).
     """
     user = _restricted_user(db_session, password="Staff-Passw0rd!")
-    _authenticate(client, db_session, user)
+    _authenticate(raw_client, db_session, user)
 
-    response = client.get("/api/v1/auth/csrf")
+    response = raw_client.get("/api/v1/auth/csrf")
 
     assert response.status_code == 200
     assert isinstance(response.json()["csrf_token"], str)
 
 
 def test_completing_password_change_deletes_restricted_row_and_issues_full_session(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """Task 3 Step 5: "completing POST /auth/password deletes the
     restricted row and a full session is issued." Field names
@@ -144,10 +144,10 @@ def test_completing_password_change_deletes_restricted_row_and_issues_full_sessi
     """
     old_password = "Old-Passw0rd!"
     user = _restricted_user(db_session, password=old_password)
-    session_row = _authenticate(client, db_session, user)
-    token = _fetch_csrf_token(client)
+    session_row = _authenticate(raw_client, db_session, user)
+    token = _fetch_csrf_token(raw_client)
 
-    response = client.post(
+    response = raw_client.post(
         "/api/v1/auth/password",
         headers={"X-CSRF-Token": token},
         json={"old_password": old_password, "new_password": "New-Passw0rd!"},
@@ -167,7 +167,7 @@ def test_completing_password_change_deletes_restricted_row_and_issues_full_sessi
 
 
 def test_restricted_session_is_refused_on_post_logout(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """`POST /auth/logout` is the one non-allowlist route that exists
     today — the "nothing else" case, standing in until later tasks add
@@ -180,9 +180,9 @@ def test_restricted_session_is_refused_on_post_logout(
     to tell them apart.
     """
     user = _restricted_user(db_session, password="Staff-Passw0rd!")
-    _authenticate(client, db_session, user)
+    _authenticate(raw_client, db_session, user)
 
-    response = client.post("/api/v1/auth/logout")
+    response = raw_client.post("/api/v1/auth/logout")
 
     assert response.status_code == 409
     assert response.json()["code"] == "session_restricted"

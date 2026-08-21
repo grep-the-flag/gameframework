@@ -260,6 +260,63 @@ def test_password_change_deletes_session_row(client: TestClient, db_session: Ses
     assert db_session.get(SessionModel, session_row.id) is None
 
 
+def _fetch_csrf_token(client: TestClient) -> str:
+    """Same helper as `test_csrf.py`, duplicated rather than imported —
+    a test module importing from another lets an unrelated suite's
+    change break this one (conftest.py's own stated reason for the same
+    choice, restated in `test_csrf.py`/`test_restricted_session.py`).
+    """
+    response = client.get("/api/v1/auth/csrf")
+    assert response.status_code == 200, response.text
+    token = response.json()["csrf_token"]
+    assert isinstance(token, str)
+    return token
+
+
+def test_password_change_deletes_every_session_the_user_holds(
+    client: TestClient, db_session: Session
+) -> None:
+    """ADR-0007 "Session model" — Revocation: "password change... delete
+    every row that user holds" — a password change in particular,
+    because the forced change exists wherever the password was not
+    chosen by its holder, so anyone else standing on the admin-set or
+    guessable one may already hold a session of their own, and ending
+    only the caller's would leave exactly that session alive. Neither
+    password-change test above reaches this: each gives its user exactly
+    one session.
+    """
+    old_password = "Old-Passw0rd!"
+    user = make_user(
+        db_session,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password(old_password),
+    )
+    caller_session = SessionModel(
+        user_id=user.id, restricted=False, expires_at=datetime.now(UTC) + timedelta(hours=12)
+    )
+    other_session = SessionModel(
+        user_id=user.id, restricted=False, expires_at=datetime.now(UTC) + timedelta(hours=12)
+    )
+    db_session.add_all([caller_session, other_session])
+    db_session.commit()
+
+    token = _mint_token(user, caller_session)
+    client.cookies.set(SESSION_COOKIE, token)
+    csrf_token = _fetch_csrf_token(client)
+
+    response = client.post(
+        "/api/v1/auth/password",
+        headers={"X-CSRF-Token": csrf_token},
+        json={"old_password": old_password, "new_password": "New-Passw0rd!"},
+    )
+
+    assert response.status_code == 200
+    db_session.expire_all()
+    assert db_session.get(SessionModel, caller_session.id) is None
+    assert db_session.get(SessionModel, other_session.id) is None
+
+
 def test_duplicate_session_cookie_answered_401_and_stays_401(client: TestClient) -> None:
     header = {"Cookie": f"{SESSION_COOKIE}=aaa; {SESSION_COOKIE}=bbb"}
 

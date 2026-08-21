@@ -58,6 +58,7 @@ from gameframework.db.session import get_session
 from gameframework.main import create_app
 from gameframework.services.passwords import hash_password
 from gameframework.services.secrets import ensure_signing_key
+from gameframework.services.sessions import PRESESSION_COOKIE_NAME
 
 from ..conftest import make_user
 
@@ -112,7 +113,7 @@ def _fetch_csrf_token(client: TestClient) -> str:
 
 
 def test_mutating_request_without_csrf_token_is_refused_with_csrf_token_invalid(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """api-surface.md §1's cookie table: missing or invalid alike answer
     `403 csrf_token_invalid`. `POST /auth/logout` is the only
@@ -120,16 +121,16 @@ def test_mutating_request_without_csrf_token_is_refused_with_csrf_token_invalid(
     header is sent.
     """
     user = make_user(db_session, role=Role.admin, must_change_password=False)
-    _authenticate(client, db_session, user)
+    _authenticate(raw_client, db_session, user)
 
-    response = client.post("/api/v1/auth/logout")
+    response = raw_client.post("/api/v1/auth/logout")
 
     assert response.status_code == 403
     assert response.json()["code"] == "csrf_token_invalid"
 
 
 def test_login_without_csrf_token_or_presession_cookie_is_refused(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """Task 3 Step 5: "a mutating request without a token is 403...
     including POST /auth/login." Login is public and mutating with no
@@ -144,7 +145,7 @@ def test_login_without_csrf_token_or_presession_cookie_is_refused(
         password_hash=hash_password(password),
     )
 
-    response = client.post(
+    response = raw_client.post(
         "/api/v1/auth/login", json={"username": user.username, "password": password}
     )
 
@@ -153,7 +154,7 @@ def test_login_without_csrf_token_or_presession_cookie_is_refused(
 
 
 def test_login_succeeds_with_a_valid_presession_csrf_token(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """The positive half of the case above: "both cases or neither"
     (Task 3 Step 5, stated there for the sid-binding assertion) applies
@@ -170,9 +171,9 @@ def test_login_succeeds_with_a_valid_presession_csrf_token(
         must_change_password=False,
         password_hash=hash_password(password),
     )
-    token = _fetch_csrf_token(client)
+    token = _fetch_csrf_token(raw_client)
 
-    response = client.post(
+    response = raw_client.post(
         "/api/v1/auth/login",
         headers={"X-CSRF-Token": token},
         json={"username": user.username, "password": password},
@@ -182,7 +183,7 @@ def test_login_succeeds_with_a_valid_presession_csrf_token(
 
 
 def test_csrf_token_minted_for_one_sid_is_refused_for_another_and_accepted_for_its_own(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """Task 3 Step 5: "a token minted for one sid is refused for another —
     and accepted for its own. The negative alone does not bind it; both
@@ -194,23 +195,23 @@ def test_csrf_token_minted_for_one_sid_is_refused_for_another_and_accepted_for_i
     user_a = make_user(db_session, role=Role.admin, must_change_password=False)
     user_b = make_user(db_session, role=Role.admin, must_change_password=False)
 
-    _authenticate(client, db_session, user_a)
-    token_for_a = _fetch_csrf_token(client)
+    _authenticate(raw_client, db_session, user_a)
+    token_for_a = _fetch_csrf_token(raw_client)
 
-    _authenticate(client, db_session, user_b)
-    refused = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": token_for_a})
+    _authenticate(raw_client, db_session, user_b)
+    refused = raw_client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": token_for_a})
 
     assert refused.status_code == 403
     assert refused.json()["code"] == "csrf_token_invalid"
 
-    token_for_b = _fetch_csrf_token(client)
-    accepted = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": token_for_b})
+    token_for_b = _fetch_csrf_token(raw_client)
+    accepted = raw_client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": token_for_b})
 
     assert accepted.status_code == 200
 
 
 def test_expired_csrf_token_is_refused_then_refetching_succeeds(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """A token past its two hours is refused, and re-fetching from
     `GET /auth/csrf` succeeds (Task 3 Step 5). No clock to move: this
@@ -224,24 +225,24 @@ def test_expired_csrf_token_is_refused_then_refetching_succeeds(
     from gameframework.services.sessions import mint_csrf_token
 
     user = make_user(db_session, role=Role.admin, must_change_password=False)
-    session_row = _authenticate(client, db_session, user)
+    session_row = _authenticate(raw_client, db_session, user)
     past_token = mint_csrf_token(
         str(session_row.id), datetime.now(UTC) - timedelta(seconds=1), get_settings()
     )
 
-    refused = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": past_token})
+    refused = raw_client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": past_token})
 
     assert refused.status_code == 403
     assert refused.json()["code"] == "csrf_token_invalid"
 
-    fresh_token = _fetch_csrf_token(client)
-    retried = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": fresh_token})
+    fresh_token = _fetch_csrf_token(raw_client)
+    retried = raw_client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": fresh_token})
 
     assert retried.status_code == 200
 
 
 def test_csrf_token_expiry_is_about_two_hours_ahead(
-    client: TestClient, db_session: Session
+    raw_client: TestClient, db_session: Session
 ) -> None:
     """The two-hour promise has two separate claims, and this is the
     second: the test above proves the verifier checks expiry at all; this
@@ -258,10 +259,10 @@ def test_csrf_token_expiry_is_about_two_hours_ahead(
     from gameframework.services.secrets import csrf_key
 
     user = make_user(db_session, role=Role.admin, must_change_password=False)
-    _authenticate(client, db_session, user)
+    _authenticate(raw_client, db_session, user)
     requested_at = datetime.now(UTC)
 
-    token = _fetch_csrf_token(client)
+    token = _fetch_csrf_token(raw_client)
 
     key = csrf_key(ensure_signing_key(get_settings()))
     claims = jwt.decode(token, key, algorithms=[_ALGORITHM])
@@ -273,7 +274,7 @@ def test_csrf_token_expiry_is_about_two_hours_ahead(
 
 
 def test_get_csrf_unreadable_cross_origin_for_a_non_frontend_event_subdomain(
-    client: TestClient,
+    raw_client: TestClient,
 ) -> None:
     """An absence assertion alone passes against a route that emits no
     CORS headers at all, so this is paired with the positive case right
@@ -289,13 +290,13 @@ def test_get_csrf_unreadable_cross_origin_for_a_non_frontend_event_subdomain(
     request in full and only omits the header a script on that origin
     would need to read it.
     """
-    response = client.get("/api/v1/auth/csrf", headers={"Origin": "https://evil.event.example.com"})
+    response = raw_client.get("/api/v1/auth/csrf", headers={"Origin": "https://evil.event.example.com"})
 
     assert response.status_code == 200
     assert "access-control-allow-origin" not in response.headers
 
 
-def test_get_csrf_readable_for_the_configured_frontend_origin(client: TestClient) -> None:
+def test_get_csrf_readable_for_the_configured_frontend_origin(raw_client: TestClient) -> None:
     """The positive counterpart the test above needs: read from
     `Settings` rather than hardcoded, since `get_settings().
     frontend_origin` is the same source `CORSMiddleware` is configured
@@ -305,7 +306,7 @@ def test_get_csrf_readable_for_the_configured_frontend_origin(client: TestClient
     """
     origin = get_settings().frontend_origin
 
-    response = client.get("/api/v1/auth/csrf", headers={"Origin": origin})
+    response = raw_client.get("/api/v1/auth/csrf", headers={"Origin": origin})
 
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") == origin
@@ -355,3 +356,46 @@ def test_cors_allowance_follows_a_different_configured_frontend_origin(
 
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") == other_origin
+
+
+def test_get_csrf_with_duplicate_session_cookies_is_refused_with_session_cookie_ambiguous(
+    raw_client: TestClient,
+) -> None:
+    """`GET /auth/csrf` runs the duplicate-cookie rule too (ADR-0007
+    "Session model": "`GET /auth/csrf` is public, and reads the session
+    anyway... It therefore runs the duplicate-cookie rule above"): it is
+    the one public route that still reads the session cookie, and the
+    attack that rule exists for — a cookie a page can plant via
+    `document.cookie` — reaches this route as much as any other. A raw
+    `Cookie:` header suppresses httpx's jar entirely (conftest.py's own
+    docstring), so every cookie the request needs is spelled out here —
+    in this case, just the two duplicate session cookies.
+    """
+    header = {"Cookie": f"{SESSION_COOKIE}=aaa; {SESSION_COOKIE}=bbb"}
+
+    response = raw_client.get("/api/v1/auth/csrf", headers=header)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "session_cookie_ambiguous"
+
+
+def test_get_csrf_with_a_deleted_sid_row_still_receives_a_presession_token(
+    raw_client: TestClient, db_session: Session
+) -> None:
+    """A cookie whose `sid` row is gone is tolerated, not refused (ADR-0007
+    "Session model": "a cookie that fails any of them is treated as no
+    session at all and the caller receives a pre-session token. Refusing
+    instead would deadlock the only route that makes a login possible").
+    Signed under the real key so it passes signature/`exp` verification
+    and fails only the row lookup.
+    """
+    user = make_user(db_session, role=Role.admin, must_change_password=False)
+    session_row = _authenticate(raw_client, db_session, user)
+    db_session.delete(session_row)
+    db_session.commit()
+
+    response = raw_client.get("/api/v1/auth/csrf")
+
+    assert response.status_code == 200
+    assert isinstance(response.json()["csrf_token"], str)
+    assert response.cookies.get(PRESESSION_COOKIE_NAME) is not None

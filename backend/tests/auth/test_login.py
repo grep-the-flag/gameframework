@@ -262,9 +262,7 @@ def test_participant_refused_while_run_created_with_scheduled_start(
     )
     make_participation(db_session, user=user, run=run)
 
-    response = client.post(
-        "/api/v1/auth/login", json={"username": username, "password": username}
-    )
+    response = client.post("/api/v1/auth/login", json={"username": username, "password": username})
 
     assert response.status_code == 409
     body = response.json()
@@ -286,9 +284,7 @@ def test_participant_refused_while_run_created_without_scheduled_start(
     )
     make_participation(db_session, user=user, run=run)
 
-    response = client.post(
-        "/api/v1/auth/login", json={"username": username, "password": username}
-    )
+    response = client.post("/api/v1/auth/login", json={"username": username, "password": username})
 
     assert response.status_code == 409
     body = response.json()
@@ -354,9 +350,7 @@ def test_participant_login_works_in_paused_and_finished(
     )
     make_participation(db_session, user=user, run=run)
 
-    response = client.post(
-        "/api/v1/auth/login", json={"username": username, "password": password}
-    )
+    response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
 
     assert response.status_code == 200
     assert SESSION_COOKIE in response.cookies

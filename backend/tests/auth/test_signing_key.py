@@ -85,9 +85,7 @@ def test_replacing_key_file_invalidates_previous_tokens(tmp_path: Path) -> None:
         jwt.decode(token, new_key, algorithms=[_ALGORITHM])
 
 
-def test_key_never_appears_in_a_log_line(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_key_never_appears_in_a_log_line(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     settings = _settings(tmp_path / "data")
 
     with caplog.at_level(logging.DEBUG):

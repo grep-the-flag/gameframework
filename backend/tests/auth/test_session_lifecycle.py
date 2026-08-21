@@ -137,9 +137,7 @@ def test_session_cookie_with_broken_signature_is_refused_with_session_invalid(
     assert response.json()["code"] == "session_invalid"
 
 
-def test_revoked_sid_refused_on_next_read_request(
-    client: TestClient, db_session: Session
-) -> None:
+def test_revoked_sid_refused_on_next_read_request(client: TestClient, db_session: Session) -> None:
     """ADR-0007: "`sid` is a row in a server-side session table, checked on
     every authenticated request — reads included." `GET /auth/session` is
     the read under test; nothing here writes anything.

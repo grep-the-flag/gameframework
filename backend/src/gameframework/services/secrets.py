@@ -41,10 +41,15 @@ import os
 import secrets
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
 from gameframework.config import Settings
 
 _KEY_FILENAME = "session-signing.key"
 _KEY_LENGTH = 32
+_CSRF_KEY_INFO = b"gameframework-csrf-v1"
+_CSRF_KEY_LENGTH = 32
 
 
 def _validated(data: bytes, key_path: Path) -> bytes:
@@ -94,3 +99,22 @@ def ensure_signing_key(settings: Settings) -> bytes:
     finally:
         tmp_key_path.unlink(missing_ok=True)
     return key
+
+
+def csrf_key(signing_key: bytes) -> bytes:
+    """HKDF-SHA256 (RFC 5869) under a fixed `info` label, derived from the
+    signing key rather than configured separately, so a signing-key
+    rotation ends every CSRF token together with every session it
+    protects (ADR-0007 "Session model" — CSRF). Via `cryptography`'s HKDF
+    rather than a hand-rolled construction: a derivation built wrongly
+    still returns a deterministic key of the right length, so nothing in
+    this suite would catch it, and binding a hand-rolled one would take
+    the RFC 5869 test vectors (M2-Task-Plan.md Task 3 Step 6).
+    """
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=_CSRF_KEY_LENGTH,
+        salt=None,
+        info=_CSRF_KEY_INFO,
+    )
+    return hkdf.derive(signing_key)

@@ -15,13 +15,14 @@ from sqlalchemy.orm import Session as DbSession
 from gameframework.config import Settings
 from gameframework.db.models.identity import Session as SessionModel
 from gameframework.db.models.identity import User
-from gameframework.services.secrets import ensure_signing_key
+from gameframework.services.secrets import csrf_key, ensure_signing_key
 
 SESSION_COOKIE_NAME = "__Secure-gf_session"
 PRESESSION_COOKIE_NAME = "__Host-gf_presession"
 _ALGORITHM = "HS256"
 SESSION_TTL = timedelta(hours=12)
 RENEWAL_THRESHOLD = timedelta(hours=2)
+CSRF_TOKEN_TTL = timedelta(hours=2)
 
 
 @dataclass
@@ -32,6 +33,10 @@ class AuthContext:
 
 class InvalidSessionToken(Exception):
     """The cookie's JWT failed signature or `exp` verification."""
+
+
+class InvalidCsrfToken(Exception):
+    """The CSRF token failed signature, `exp` or binding verification."""
 
 
 def cookie_domain(settings: Settings) -> str:
@@ -99,3 +104,32 @@ def decode_token(token: str, settings: Settings) -> dict[str, object]:
         )
     except jwt.InvalidTokenError as exc:
         raise InvalidSessionToken from exc
+
+
+def mint_csrf_token(binding: str, expires_at: datetime, settings: Settings) -> str:
+    """A keyed MAC over `binding` — a session's `sid`, or the pre-session
+    id riding the `__Host-` cookie before login — and the token's own
+    expiry, under `csrf_key()` (ADR-0007 "Session model" — CSRF). The
+    expiry is a parameter rather than computed here: the route chooses
+    `now + 2h`, this primitive stays clock-free.
+    """
+    key = csrf_key(ensure_signing_key(settings))
+    claims = {"binding": binding, "exp": int(expires_at.timestamp())}
+    return jwt.encode(claims, key, algorithm=_ALGORITHM)  # pyright: ignore[reportUnknownMemberType]
+
+
+def verify_csrf_token(token: str, binding: str, settings: Settings) -> None:
+    """Raises `InvalidCsrfToken` unless `token` is a live HS256 JWT under
+    `csrf_key()` bound to exactly this `binding`. `algorithms=["HS256"]`
+    is pinned rather than read from the token, as `decode_token` above
+    already does for the session cookie (ADR-0007, M2-Task-Plan.md Task 3).
+    """
+    key = csrf_key(ensure_signing_key(settings))
+    try:
+        claims = jwt.decode(  # pyright: ignore[reportUnknownMemberType]
+            token, key, algorithms=[_ALGORITHM]
+        )
+    except jwt.InvalidTokenError as exc:
+        raise InvalidCsrfToken from exc
+    if claims.get("binding") != binding:
+        raise InvalidCsrfToken("csrf token is bound to a different session")

@@ -24,15 +24,14 @@ the allowlist; it stands in for "nothing else" until later tasks add
 more of them.
 
 The denial code for a restricted session reaching a non-allowlisted
-route is not named in api-surface.md or ADR-0007 — neither document
-defines one. This file asserts `403 session_restricted`: 403 because the
-session is valid and the denial is about what it may reach rather than
-who it is (matching `role_denied`'s status, api-surface.md §1), and
-`session_restricted` to sit beside this codebase's other three
-session-state codes (`session_required`, `session_invalid`,
-`session_cookie_ambiguous`, all in `api/deps.py`/
-`test_session_lifecycle.py`) rather than inventing an unrelated shape —
-this file's own choice, not a documented contract.
+route is in api-surface.md's cookie/codes table: `409` with code
+`session_restricted` — not `403`, because the caller's role may reach
+the route and the session is valid; what collides is the session's own
+state, the same shape as `run_not_started` and, like it, resolvable
+(`POST /auth/password` is the way out). Sharing a status with
+`run_not_started` is exactly why every test below asserts the `code`
+alongside it rather than the status alone — a status-only check would
+pass against an implementation refusing for the wrong reason.
 
 Every CSRF token below comes from `_fetch_csrf_token`, `test_csrf.py`'s
 own helper duplicated here rather than imported — a test module
@@ -172,17 +171,18 @@ def test_restricted_session_is_refused_on_post_logout(
 ) -> None:
     """`POST /auth/logout` is the one non-allowlist route that exists
     today — the "nothing else" case, standing in until later tasks add
-    more of them (this file's own docstring). A valid CSRF token is
-    included even though `require_csrf` runs after the allowlist check in
-    `current_session`'s ordering (ADR-0007/Task 3): without one, a bug
-    that checked CSRF first would still answer 403, and this test would
-    not tell the two failure modes apart.
+    more of them (this file's own docstring). No CSRF token is sent: the
+    allowlist check (position 4) runs before `require_csrf` (position 6)
+    in `current_session`'s ordering (ADR-0007/Task 3), and the two
+    denials now live on different statuses — `409 session_restricted`
+    against `403 csrf_token_invalid` — so a bug that checked CSRF first
+    is still distinguishable from the allowlist itself without a token
+    to tell them apart.
     """
     user = _restricted_user(db_session, password="Staff-Passw0rd!")
     _authenticate(client, db_session, user)
-    token = _fetch_csrf_token(client)
 
-    response = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": token})
+    response = client.post("/api/v1/auth/logout")
 
-    assert response.status_code == 403
+    assert response.status_code == 409
     assert response.json()["code"] == "session_restricted"

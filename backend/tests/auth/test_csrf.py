@@ -9,9 +9,10 @@ fixture. `uv run pytest tests/auth -x` must show that.
 
 Two Step 6 primitives are referenced directly rather than worked around:
 `mint_csrf_token(binding, expires_at, settings)` in `services/sessions.py`
-and `csrf_key(signing_key)` in `services/secrets.py`. Neither exists yet,
-so importing either is this file's own red for the two tests that need
-one — the same shape `test_passwords.py` took against a wholly missing
+and `csrf_key(signing_key)` in `services/secrets.py` — both now specified
+in M2-Task-Plan.md Task 3, not only here. Neither exists yet, so
+importing either is this file's own red for the two tests that need one
+— the same shape `test_passwords.py` took against a wholly missing
 module before Step 3 landed it, scoped here to a local import inside just
 the test that needs it, so the tests that need no hand-minted token still
 fail on `require_csrf`/the missing route rather than an unrelated
@@ -21,9 +22,11 @@ a test mint an already-past token with no clock to move, and it makes
 "two hours" the route's choice rather than the primitive's — a choice
 `test_csrf_token_expiry_is_about_two_hours_ahead` checks directly, since
 every other test here would also pass a route that chose 200 hours. The
-token itself is assumed to be a JWT under that key: the mechanism
-`services/sessions.py` already uses for the session cookie, not a new
-one.
+token is an HS256 JWT under that key, the mechanism `services/sessions.py`
+already uses for the session cookie — and the task plan is explicit that
+the verifier pins `algorithms=["HS256"]` and never reads the algorithm
+out of the token, as the session side already does; every `jwt.decode`
+call below does the same.
 
 `GET /auth/csrf`'s response body is assumed to carry the token as
 `{"csrf_token": "..."}` — api-surface.md leaves body schemas out of scope

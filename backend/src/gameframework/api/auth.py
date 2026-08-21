@@ -203,9 +203,7 @@ def change_password(
     # on the admin-set or guessable one may already hold a session of
     # their own.
     other_sessions = (
-        db.execute(select(SessionModel).where(SessionModel.user_id == auth.user.id))
-        .scalars()
-        .all()
+        db.execute(select(SessionModel).where(SessionModel.user_id == auth.user.id)).scalars().all()
     )
     for session_row in other_sessions:
         db.delete(session_row)

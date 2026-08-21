@@ -290,7 +290,9 @@ def test_get_csrf_unreadable_cross_origin_for_a_non_frontend_event_subdomain(
     request in full and only omits the header a script on that origin
     would need to read it.
     """
-    response = raw_client.get("/api/v1/auth/csrf", headers={"Origin": "https://evil.event.example.com"})
+    response = raw_client.get(
+        "/api/v1/auth/csrf", headers={"Origin": "https://evil.event.example.com"}
+    )
 
     assert response.status_code == 200
     assert "access-control-allow-origin" not in response.headers

@@ -13,7 +13,7 @@ the routes that need it).
 
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from fastapi import Depends, Request, Response
 from sqlalchemy.orm import Session as DbSession

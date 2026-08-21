@@ -104,7 +104,9 @@ def _restricted_user(db_session: Session, *, password: str) -> User:
     )
 
 
-def test_restricted_session_reaches_get_session(raw_client: TestClient, db_session: Session) -> None:
+def test_restricted_session_reaches_get_session(
+    raw_client: TestClient, db_session: Session
+) -> None:
     """Already true today: nothing has ever gated `GET /auth/session` on
     `restricted`, and it must stay that way once Step 6 adds the gate for
     the routes that are not on the allowlist.

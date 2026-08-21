@@ -260,19 +260,6 @@ def test_password_change_deletes_session_row(client: TestClient, db_session: Ses
     assert db_session.get(SessionModel, session_row.id) is None
 
 
-def _fetch_csrf_token(client: TestClient) -> str:
-    """Same helper as `test_csrf.py`, duplicated rather than imported —
-    a test module importing from another lets an unrelated suite's
-    change break this one (conftest.py's own stated reason for the same
-    choice, restated in `test_csrf.py`/`test_restricted_session.py`).
-    """
-    response = client.get("/api/v1/auth/csrf")
-    assert response.status_code == 200, response.text
-    token = response.json()["csrf_token"]
-    assert isinstance(token, str)
-    return token
-
-
 def test_password_change_deletes_every_session_the_user_holds(
     client: TestClient, db_session: Session
 ) -> None:
@@ -303,11 +290,9 @@ def test_password_change_deletes_every_session_the_user_holds(
 
     token = _mint_token(user, caller_session)
     client.cookies.set(SESSION_COOKIE, token)
-    csrf_token = _fetch_csrf_token(client)
 
     response = client.post(
         "/api/v1/auth/password",
-        headers={"X-CSRF-Token": csrf_token},
         json={"old_password": old_password, "new_password": "New-Passw0rd!"},
     )
 

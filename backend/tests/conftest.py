@@ -217,6 +217,17 @@ def _test_client(db_session: Session, client_cls: type[TestClient]) -> Iterator[
     assertions read one transaction. Task 1a ships no route to prove that
     with; verified instead with a temporary diagnostic route added directly
     to `app` — see the Step 2 report for the method and result.
+
+    `client=("127.0.0.1", 50000)` (Task 4 Step 5): Starlette's own default
+    peer, `("testclient", 50000)`, is not a parseable IP address, and
+    `services/blocking.py`'s `normalize_source` — an `ipaddress` parse of
+    the resolved source on every `POST /auth/login`/`POST /auth/password`
+    call — has no reason to tolerate one, since a real deployment's socket
+    peer is always a real address. A loopback address here is what makes
+    every existing test's login/password calls keep working now that those
+    two routes resolve a source on every request; tests needing a
+    *distinguishable* source of their own (`test_blocking.py`) build their
+    own client rather than relying on this one.
     """
 
     def override_get_session() -> Iterator[Session]:
@@ -224,7 +235,9 @@ def _test_client(db_session: Session, client_cls: type[TestClient]) -> Iterator[
 
     app.dependency_overrides[get_session] = override_get_session
     try:
-        with client_cls(app, base_url="https://app.event.example.com") as test_client:
+        with client_cls(
+            app, base_url="https://app.event.example.com", client=("127.0.0.1", 50000)
+        ) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.pop(get_session, None)

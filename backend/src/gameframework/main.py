@@ -10,6 +10,7 @@ from gameframework.api.health import router as health_router
 from gameframework.api.info import router as info_router
 from gameframework.api.middleware import RequestIdMiddleware
 from gameframework.api.security import router as security_router
+from gameframework.api.users import router as users_router
 from gameframework.config import get_settings
 from gameframework.db.session import get_session
 from gameframework.services.bootstrap import ensure_initial_admin
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(info_router, prefix="/api/v1")
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(security_router, prefix="/api/v1")
+    app.include_router(users_router, prefix="/api/v1")
     return app
 
 

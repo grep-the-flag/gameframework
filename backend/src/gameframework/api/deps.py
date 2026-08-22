@@ -19,7 +19,7 @@ from fastapi import Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
-from gameframework.api.errors import ProblemError, forbidden
+from gameframework.api.errors import ProblemError, forbidden, not_found
 from gameframework.config import Settings, get_settings
 from gameframework.db.models.identity import Role, User
 from gameframework.db.models.identity import Session as SessionModel
@@ -214,6 +214,37 @@ def resolve_captaincy(db: DbSession, user: User) -> Team | None:
         if team is not None and team.captain_user_id == user.id:
             return team
     return None
+
+
+def require_role(auth: AuthContext, *roles: Role) -> None:
+    """A field- or action-level role gate, distinct from `current_session`'s
+    route-level one at position (5): some fields on an otherwise-reachable
+    route are narrower than the route itself. `user.role` writes are
+    admin-only even on `PATCH /users/{id}`, which a gameadmin may otherwise
+    call (api-surface.md §2.17 role administration (1) — "for a gameadmin
+    the field is simply not writable"), so the route checks this per field
+    rather than only at `current_session`'s route-wide check.
+    """
+    if auth.user.role not in roles:
+        forbidden("role_denied")
+
+
+def resolve_staff_write_target(db: DbSession, auth: AuthContext, user_id: uuid.UUID) -> User:
+    """The gameadmin-target rule (api-surface.md §2.17 role administration
+    (2)): a gameadmin's user *writes* — `PATCH`, deactivate — reach
+    participant accounts only. A target holding `admin` or `gameadmin`
+    resolves `404`, the same non-disclosure the object-scope split uses
+    everywhere else: a `403` on that object would confirm it exists, which
+    is exactly what a gameadmin who can already list every staff member's
+    role must not get confirmed about one specific account. A no-op for an
+    admin caller, whose object scope is `any` (§2.17).
+    """
+    target = db.get(User, user_id)
+    if target is None:
+        not_found("object_not_found")
+    if auth.user.role is Role.gameadmin and target.role is not Role.player:
+        not_found("object_not_found")
+    return target
 
 
 def _resolve_object_scope(auth: AuthContext, request: Request) -> None:

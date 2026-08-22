@@ -588,3 +588,77 @@ def test_password_change_resets_the_failure_counter(db_session: Session) -> None
         )
         assert response.status_code == 200
         assert SESSION_COOKIE in response.cookies
+
+
+def test_activation_resets_the_failure_counter(db_session: Session) -> None:
+    """The scenario ADR-0007 line 115's "or a completed activation" clause
+    actually names, distinct from the password-change test above (a
+    staff/captain change): a player completing first activation — login
+    on username-as-password with an OTP outstanding, restricted session,
+    then `POST /auth/password` with the OTP — resets the counter too.
+    Four failures against an unrelated account, then a completed
+    activation from the same source, then one more failure — only one
+    consecutive failure since the reset — must still let a further
+    correct login through.
+    """
+    run = make_event_run(db_session, status=RunStatus.running)
+    player_username = "player-completes-activation"
+    raw_otp = "ACTIVATE"
+    make_user(
+        db_session,
+        username=player_username,
+        role=Role.player,
+        must_change_password=True,
+        password_hash=hash_password(player_username),
+        otp_hash=hash_password(raw_otp),
+        otp_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        otp_consumed_at=None,
+    )
+    player = db_session.execute(select(User).where(User.username == player_username)).scalar_one()
+    make_participation(db_session, user=player, run=run)
+
+    guessed_username = "admin-guessed-around-the-activation"
+    make_user(
+        db_session,
+        username=guessed_username,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password("Guessed-Passw0rd!"),
+    )
+
+    with _source_client(db_session, "192.0.2.90") as source:
+        for _ in range(4):
+            _fail_login(source, guessed_username)
+
+        activation_login = source.post(
+            "/api/v1/auth/login",
+            json={"username": player_username, "password": player_username},
+        )
+        assert activation_login.status_code == 200
+
+        activation_complete = source.post(
+            "/api/v1/auth/password",
+            json={
+                "old_password": player_username,
+                "otp": raw_otp,
+                "new_password": "New-Passw0rd!",
+            },
+        )
+        assert activation_complete.status_code == 200
+        # The completed activation set a full session cookie, which shifts
+        # `GET /auth/csrf` from presession- to session-binding (Task 3) —
+        # wrong for the public login attempts below.
+        source.cookies.clear()
+
+        after_reset_failure = source.post(
+            "/api/v1/auth/login",
+            json={"username": guessed_username, "password": "wrong-password"},
+        )
+        assert after_reset_failure.status_code == 401
+
+        response = source.post(
+            "/api/v1/auth/login",
+            json={"username": guessed_username, "password": "Guessed-Passw0rd!"},
+        )
+        assert response.status_code == 200
+        assert SESSION_COOKIE in response.cookies

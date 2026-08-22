@@ -284,15 +284,12 @@ def change_password(
         db.delete(session_row)
     db.commit()
 
-    # Deliberately no `register_full_success` here: the counter resets
-    # only on a full *authentication* (data-model.md §3.3 line 166), and
-    # a `POST /auth/password` caller is already authenticated to reach
-    # this route. Resetting on a completed change — even though both
-    # ADR-0007 line 115 and data-model.md line 166 name it as a case that
-    # otherwise would — is a bypass: the counter is per source address,
-    # so anyone holding one valid account could fail four times against
-    # other accounts, change their own password to reset, and repeat
-    # indefinitely.
+    # data-model.md §3.3: "a completed activation or password change"
+    # resets the counter too, not only an unrestricted login — deliberate
+    # (ADR-0007 line 115), not a bypass: several players activating in
+    # sequence on one shared PC must not accumulate mistyped OTPs with no
+    # reset between them and block the machine on the fifth.
+    register_full_success(db, source)
 
     token, _new_session_row = issue_session(db, auth.user, settings)
     set_session_cookie(response, token, settings)

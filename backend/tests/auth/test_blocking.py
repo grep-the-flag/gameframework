@@ -530,17 +530,18 @@ def test_full_login_success_resets_the_failure_counter(db_session: Session) -> N
         assert SESSION_COOKIE in second_success.cookies
 
 
-def test_password_change_does_not_reset_the_failure_counter(db_session: Session) -> None:
-    """data-model.md §3.3 line 166 / ADR-0007 line 115: "reset only by a
-    full **authentication** success." A completed `POST /auth/password`
-    change is not an authentication — the caller already holds a session
-    to reach it — and resetting on it is a bypass distinct from the
-    restricted-login case above: the counter is per source, so one valid
-    account holder could fail four times against *other* accounts, change
-    their own password to reset, and repeat indefinitely. Four failures
-    against one account, then a completed change on a second account from
-    the same source, then one more failure against the first — the
-    address must already be blocked, proving the change reset nothing.
+def test_password_change_resets_the_failure_counter(db_session: Session) -> None:
+    """data-model.md §3.3 line 166 / ADR-0007 line 115: both name "a login
+    that issues an unrestricted session, **or a completed activation or
+    password change**" as the full success that resets the counter —
+    deliberately, not an oversight: several players activating in
+    sequence on one shared PC (ADR-0007 "Activation is granted per
+    request... a group playing together on one shared PC") would
+    otherwise accumulate mistyped OTPs with no reset between them, and
+    the fifth would block the machine for everyone still to activate.
+    Four failures, then a completed change from the same source, then one
+    more failure — only one consecutive failure since the reset — must
+    still let a further correct login through.
     """
     changer_username = "admin-changes-own-password"
     changer_password = "Changer-Passw0rd!"
@@ -572,17 +573,18 @@ def test_password_change_does_not_reset_the_failure_counter(db_session: Session)
         assert change_response.status_code == 200
         # The change set a session cookie, which shifts `GET /auth/csrf`
         # from presession- to session-binding (Task 3) — wrong for the
-        # public login attempt below.
+        # public login attempts below.
         source.cookies.clear()
 
-        fifth_failure = source.post(
+        after_reset_failure = source.post(
             "/api/v1/auth/login",
             json={"username": guessed_username, "password": "wrong-password"},
         )
-        assert fifth_failure.status_code == 401
+        assert after_reset_failure.status_code == 401
 
-        sixth = source.post(
+        response = source.post(
             "/api/v1/auth/login",
             json={"username": guessed_username, "password": "Guessed-Passw0rd!"},
         )
-        _assert_blocked(sixth)
+        assert response.status_code == 200
+        assert SESSION_COOKIE in response.cookies

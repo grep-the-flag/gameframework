@@ -65,6 +65,7 @@ from gameframework.db.models.feedback import AuditScope
 from gameframework.db.models.identity import BlockedAddress, Role, User
 from gameframework.services.audit import write_audit
 from gameframework.services.passwords import hash_password
+from gameframework.services.users import normalize_username
 
 INITIAL_ADMIN_USERNAME = "admin"
 _CREDENTIALS_FILENAME = "initial-admin-credentials"
@@ -135,7 +136,7 @@ def ensure_initial_admin(db: Session, settings: Settings) -> None:
 
     password = generate_password()
     user = User(
-        username=INITIAL_ADMIN_USERNAME,
+        username=normalize_username(INITIAL_ADMIN_USERNAME),
         password_hash=hash_password(password),
         role=Role.admin,
         is_active=True,

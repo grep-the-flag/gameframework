@@ -7,6 +7,7 @@ belong with the routes rather than here, the same split `api/security.py`
 keeps with `resolve_captaincy`.
 """
 
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,18 @@ from gameframework.db.models.identity import Session as SessionModel
 from gameframework.services.passwords import hash_password
 
 
+def normalize_username(username: str) -> str:
+    """data-model.md §3.1: NFKC + casefold + trim, applied at every write
+    site (here, the initial admin mint, and Task 7's participant import) and
+    at the `User.username ==` lookup in `api/auth.py` — so `Anna` and `anna`
+    are one account (Backlog.md "Before Task 7"). A half fix is worse than
+    none: normalizing writes while a lookup stays raw makes the two sides
+    disagree, so every site touching `username` for comparison or storage
+    goes through this one function rather than repeating the transform.
+    """
+    return unicodedata.normalize("NFKC", username).casefold().strip()
+
+
 def create_staff_user(db: Session, *, username: str, initial_password: str, role: Role) -> User:
     """api-surface.md §2.4: an admin or gameadmin account, its initial
     password set by the creating admin and handed over out of band, never
@@ -25,7 +38,7 @@ def create_staff_user(db: Session, *, username: str, initial_password: str, role
     forces the holder to choose their own before anything else.
     """
     user = User(
-        username=username,
+        username=normalize_username(username),
         password_hash=hash_password(initial_password),
         role=role,
         is_active=True,

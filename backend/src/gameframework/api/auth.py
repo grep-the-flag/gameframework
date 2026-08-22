@@ -95,6 +95,22 @@ def login(
         register_failure(db, source, settings.block_window_minutes)
         raise ProblemError(401, "invalid_credentials")
 
+    # data-model.md §3.1 `is_active` / api-surface.md §2.2: deactivation
+    # must refuse the *next* login, or the switch stops nothing — the same
+    # account that was just revoked signs straight back in a second later.
+    # Checked here, once the account is known to exist and before any
+    # role-specific gate: is_active is not player-only, so nesting it under
+    # `if user.role is Role.player` below would leave a deactivated staff
+    # account unchecked. Ahead of password verification too, joining
+    # run_not_started/activation_required in the same accepted-oracle
+    # family (ADR-0007's risk register) — the credentials are not what
+    # collides here, the account's own state is, so confirming the
+    # password first would tell an attacker nothing this check does not
+    # already tell them, and would wrongly count a legitimate holder's
+    # correct password as a registered failure.
+    if not user.is_active:
+        raise ProblemError(409, "account_deactivated")
+
     if user.role is Role.player:
         participation = (
             db.execute(select(EventParticipation).where(EventParticipation.user_id == user.id))

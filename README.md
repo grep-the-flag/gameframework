@@ -20,6 +20,27 @@ This starts three services:
 
 Stop everything with `docker compose down`.
 
+### Host commands
+
+The installation mints its own `admin` account at first start, with a
+CSPRNG password written once to a `0600` file in the backend's data
+volume. Read it with:
+
+```sh
+docker compose exec backend python -m gameframework.cli initial-admin-credentials
+```
+
+The file is removed the first time that account logs in. If an
+installation locks itself out entirely — the admin password lost, or
+every admin blocked by address — recover it with:
+
+```sh
+docker compose exec backend python -m gameframework.cli reset-admin <username>
+```
+
+This resets the named admin account to a fresh random password, rewrites
+the credentials file, and clears all address blocks.
+
 ### Running tests
 
 ```sh

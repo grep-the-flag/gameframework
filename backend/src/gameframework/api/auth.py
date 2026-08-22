@@ -35,6 +35,10 @@ from gameframework.services.blocking import (
     resolve_client_address,
     retry_after_seconds,
 )
+from gameframework.services.bootstrap import (
+    INITIAL_ADMIN_USERNAME,
+    remove_initial_admin_credentials_if_present,
+)
 from gameframework.services.passwords import hash_password, verify_password
 from gameframework.services.sessions import (
     CSRF_TOKEN_TTL,
@@ -127,6 +131,15 @@ def login(
         raise ProblemError(401, "invalid_credentials")
 
     token, _session_row = issue_session(db, user, settings)
+
+    if user.username == INITIAL_ADMIN_USERNAME and user.role is Role.admin:
+        # data-model.md §5 / ADR-0007: removed on this account's first
+        # successful login, not on a later password change — an admin who
+        # never gets round to choosing their own password would otherwise
+        # leave a recoverable credential in the data volume for the life
+        # of the installation. Idempotent, so every login after the first
+        # is a no-op here.
+        remove_initial_admin_credentials_if_present(settings)
 
     # data-model.md §3.3: only a login that issues an *unrestricted*
     # session resets the counter — one that merely opens a restricted

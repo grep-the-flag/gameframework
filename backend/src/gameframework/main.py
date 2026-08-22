@@ -9,6 +9,7 @@ from gameframework.api.errors import ProblemError, problem_error_handler
 from gameframework.api.health import router as health_router
 from gameframework.api.info import router as info_router
 from gameframework.api.middleware import RequestIdMiddleware
+from gameframework.api.security import router as security_router
 from gameframework.config import get_settings
 from gameframework.services.secrets import ensure_signing_key
 
@@ -34,6 +35,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(info_router, prefix="/api/v1")
     app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(security_router, prefix="/api/v1")
     return app
 
 

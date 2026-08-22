@@ -16,12 +16,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from fastapi import Depends, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from gameframework.api.errors import ProblemError, forbidden
 from gameframework.config import Settings, get_settings
 from gameframework.db.models.identity import Role, User
 from gameframework.db.models.identity import Session as SessionModel
+from gameframework.db.models.runs import EventParticipation, Team
 from gameframework.db.session import get_session
 from gameframework.services.sessions import (
     CSRF_TOKEN_TTL,
@@ -184,6 +186,34 @@ def _require_csrf(auth: AuthContext, request: Request, settings: Settings) -> No
         verify_csrf_token(token, str(auth.session.id), settings)
     except InvalidCsrfToken as exc:
         raise ProblemError(403, "csrf_token_invalid") from exc
+
+
+def resolve_captaincy(db: DbSession, user: User) -> Team | None:
+    """The team `user` currently captains, or `None` if they captain none.
+    `captain` is derived from `team.captain_user_id` (data-model.md
+    §3.1/§3.11), never a stored role, so every route that needs to tell a
+    captain from an ordinary player — the login activation gate, the
+    `POST /auth/otp` own-team scope check, and the player branch of
+    `POST /auth/password` (M2-Task-Plan.md Task 4) — resolves it the same
+    way, through the live participation, rather than trusting a claim.
+
+    Walks every participation the user holds rather than a single "current
+    run" one: that resolution is Task 12's, and this milestone's fixtures
+    give each participant exactly one, so the first match is unambiguous
+    for now.
+    """
+    participations = (
+        db.execute(select(EventParticipation).where(EventParticipation.user_id == user.id))
+        .scalars()
+        .all()
+    )
+    for participation in participations:
+        if participation.team_id is None:
+            continue
+        team = db.get(Team, participation.team_id)
+        if team is not None and team.captain_user_id == user.id:
+            return team
+    return None
 
 
 def _resolve_object_scope(auth: AuthContext, request: Request) -> None:

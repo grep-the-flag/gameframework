@@ -49,6 +49,7 @@ from gameframework.services.sessions import (
     mint_csrf_token,
     verify_csrf_token,
 )
+from gameframework.services.users import normalize_username
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -90,7 +91,9 @@ def login(
     except InvalidCsrfToken as exc:
         raise ProblemError(403, "csrf_token_invalid") from exc
 
-    user = db.execute(select(User).where(User.username == body.username)).scalar_one_or_none()
+    user = db.execute(
+        select(User).where(User.username == normalize_username(body.username))
+    ).scalar_one_or_none()
     if user is None:
         register_failure(db, source, settings.block_window_minutes)
         raise ProblemError(401, "invalid_credentials")

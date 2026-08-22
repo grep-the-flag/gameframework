@@ -2,3 +2,9 @@
 # .env.example, never commit real credentials.
 .env
 AGENTS.md
+
+# impeccable writes these into the repository root and documents no way to move
+# them. The design truth lives in the vault, so both names are symlinks into it and
+# neither is committed — one file, owned by the vault, invisible to a public repo.
+PRODUCT.md
+DESIGN.md

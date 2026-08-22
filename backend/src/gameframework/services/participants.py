@@ -1,10 +1,19 @@
 """Participant import and single creation (M2-Task-Plan.md Task 7;
-api-surface.md §2.4, §2.17; data-model.md §3.10). Solo-mode team creation is
-Task 8's, which owns the team machinery it needs — this module writes
-`event_participation` rows only, never `team`.
+api-surface.md §2.4, §2.17; data-model.md §3.10). Solo-mode team creation
+(Task 8 Step 4) lives here too, since it is the import's own behaviour in
+a `solo` run rather than a separate call (api-surface.md §2.4/§2.5) — but
+it writes no team-creation logic of its own: `create_team` in
+`services/teams.py` is the one place a team is ever written, and this
+module calls it once per participant rather than growing a second path.
+
+`RosterFrozenError`, `ensure_roster_open` and `mint_handle` moved to
+`services/teams.py` in the same step, because this module now depends on
+that one for `create_team` — a dependency that must not run in the other
+direction, which is what "one mechanism" for the roster freeze and the
+handle grammar actually requires once two modules need both. Re-exported
+here so `api/participants.py`'s existing import keeps working unchanged.
 """
 
-import secrets
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -12,16 +21,30 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from gameframework.db.models.authoring import ParticipationMode
 from gameframework.db.models.feedback import AuditScope
 from gameframework.db.models.identity import Role, User
-from gameframework.db.models.runs import EventParticipation, EventRun, RunStatus
+from gameframework.db.models.runs import EventParticipation, EventRun
 from gameframework.services.audit import write_audit
 from gameframework.services.passwords import hash_password
+from gameframework.services.teams import (
+    RosterFrozenError,
+    create_team,
+    ensure_roster_open,
+    mint_handle,
+)
 from gameframework.services.users import normalize_username
 
-# 3 bytes = 6 hex chars: "p-abcdef" is 8 characters, comfortably inside
-# data-model.md §3.10's ^[a-z][a-z0-9-]{1,27}$ body limit.
-_HANDLE_SUFFIX_BYTES = 3
+__all__ = [
+    "RosterFrozenError",
+    "DuplicateParticipationError",
+    "ParticipantRow",
+    "ImportedParticipant",
+    "ImportReport",
+    "mint_handle",
+    "import_participants",
+    "create_participant",
+]
 
 
 @dataclass
@@ -48,11 +71,6 @@ class ImportReport:
     participants: list[ImportedParticipant]
 
 
-class RosterFrozenError(Exception):
-    """api-surface.md §2.4: a roster write once the run has left `created`
-    — the roster freezes at `start` (§2.5)."""
-
-
 class DuplicateParticipationError(Exception):
     """A row naming an account that already holds a participation in this
     run — distinct from reuse, where the account exists elsewhere and gains
@@ -61,25 +79,6 @@ class DuplicateParticipationError(Exception):
     def __init__(self, username: str) -> None:
         super().__init__(username)
         self.username = username
-
-
-def mint_handle(prefix: str, existing: set[str]) -> str:
-    """data-model.md §3.10: `^[a-z][a-z0-9-]{1,27}$`, unique **per run** —
-    `existing` is the caller's set of handles already taken in the run being
-    minted into, so a collision within that one run is retried rather than
-    minted twice. Not globally unique: the same value may recur in a
-    different run, which the composite `(event_run_id, handle)` index
-    (data-model.md §6) allows and this function has no reason to prevent.
-    """
-    while True:
-        candidate = f"{prefix}-{secrets.token_hex(_HANDLE_SUFFIX_BYTES)}"
-        if candidate not in existing:
-            return candidate
-
-
-def _ensure_roster_open(run: EventRun) -> None:
-    if run.status is not RunStatus.created:
-        raise RosterFrozenError()
 
 
 def import_participants(
@@ -102,8 +101,21 @@ def import_participants(
     every user and participation this call creates is only `add`ed, never
     committed on its own — so one transaction carries the whole set, and
     describes it as one coherent set rather than whichever prefix survived.
+
+    In a `solo` run, each participant's own team is formed immediately
+    after their participation is written, via `create_team` — "the one
+    place a team is formed without §2.5" (api-surface.md §2.4). Each call
+    commits on its own (`create_team`'s own `write_audit`), so a solo
+    import's atomicity is per-participant from that point on rather than
+    whole-batch: every row was already validated above, before any user,
+    participation or team was written, so the only way a later
+    participant's `create_team` call could fail is a condition this
+    function's own construction rules out — the captain is always that
+    same participant, already a member of the one-person team by
+    construction, and their own participation was just written in this
+    same call.
     """
-    _ensure_roster_open(run)
+    ensure_roster_open(run)
 
     existing_participations = (
         db.execute(select(EventParticipation).where(EventParticipation.event_run_id == run.id))
@@ -146,6 +158,17 @@ def import_participants(
         handle = mint_handle("p", existing_handles)
         existing_handles.add(handle)
         db.add(EventParticipation(user_id=user.id, event_run_id=run.id, handle=handle))
+        db.flush()
+
+        if run.participation_mode is ParticipationMode.solo:
+            create_team(
+                db,
+                run,
+                name=row.name,
+                member_ids=[user.id],
+                captain_id=user.id,
+                actor_user_id=actor_user_id,
+            )
 
         results.append(
             ImportedParticipant(

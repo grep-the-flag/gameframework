@@ -23,7 +23,6 @@ refused row refuses the whole call and writes nothing (api-surface.md
 
 import re
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -381,27 +380,10 @@ def test_handles_from_one_import_are_distinct_and_match_the_grammar(
         assert _HANDLE_RE.fullmatch(handle)
 
 
-def test_mint_handle_retries_on_a_collision_within_one_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`mint_handle(prefix, existing) -> str` (Task 7 Produces line): a
-    within-run collision must be retried rather than minted twice — proven
-    here with the random suffix source controlled, since an actual HTTP-level
-    collision is not practical to force. The suffix generator is expected to
-    be `secrets.token_hex`, the codebase's existing idiom for this kind of
-    value (`services/bootstrap.py`'s temp-file names).
-    """
-    from gameframework.services import participants as participants_module
-
-    suffixes = iter(["aaaaaa", "aaaaaa", "bbbbbb"])
-
-    def _fake_token_hex(n: int) -> str:
-        return next(suffixes)
-
-    monkeypatch.setattr(participants_module.secrets, "token_hex", _fake_token_hex)
-
-    handle = participants_module.mint_handle("p", {"p-aaaaaa"})
-
-    assert handle == "p-bbbbbb"
-    assert _HANDLE_RE.fullmatch(handle)
+# test_mint_handle_retries_on_a_collision_within_one_run moved to
+# tests/teams/test_atomic_creation.py (Task 8 Step 4): `mint_handle` now
+# lives in services/teams.py, which services/participants.py imports
+# rather than defines.
 
 
 def test_imported_participant_authenticates_into_a_restricted_session(

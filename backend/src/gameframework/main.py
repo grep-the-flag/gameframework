@@ -11,6 +11,7 @@ from gameframework.api.info import router as info_router
 from gameframework.api.middleware import RequestIdMiddleware
 from gameframework.api.participants import router as participants_router
 from gameframework.api.security import router as security_router
+from gameframework.api.teams import router as teams_router
 from gameframework.api.users import router as users_router
 from gameframework.config import get_settings
 from gameframework.db.session import get_session
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     app.include_router(security_router, prefix="/api/v1")
     app.include_router(users_router, prefix="/api/v1")
     app.include_router(participants_router, prefix="/api/v1")
+    app.include_router(teams_router, prefix="/api/v1")
     return app
 
 

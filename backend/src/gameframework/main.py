@@ -8,10 +8,12 @@ from gameframework.api.auth import router as auth_router
 from gameframework.api.catalog import router as catalog_router
 from gameframework.api.definitions import router as definitions_router
 from gameframework.api.errors import ProblemError, problem_error_handler
+from gameframework.api.event import router as event_router
 from gameframework.api.health import router as health_router
 from gameframework.api.info import router as info_router
 from gameframework.api.middleware import RequestIdMiddleware
 from gameframework.api.participants import router as participants_router
+from gameframework.api.runs import router as runs_router
 from gameframework.api.security import router as security_router
 from gameframework.api.teams import router as teams_router
 from gameframework.api.users import router as users_router
@@ -60,6 +62,8 @@ def create_app() -> FastAPI:
     app.include_router(teams_router, prefix="/api/v1")
     app.include_router(catalog_router, prefix="/api/v1")
     app.include_router(definitions_router, prefix="/api/v1")
+    app.include_router(runs_router, prefix="/api/v1")
+    app.include_router(event_router, prefix="/api/v1")
     return app
 
 

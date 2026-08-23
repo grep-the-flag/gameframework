@@ -214,7 +214,13 @@ class StoreResolver:
 
     db: Session
 
-    def resolve(self, minigame_id: str, version_range: str) -> dict[str, Any] | None:
+    def resolve_row(self, minigame_id: str, version_range: str) -> InstalledArtifact | None:
+        """The winning row itself, not only its manifest — Task 10's pin
+        recording needs `(version, image_digest)` together
+        (data-model.md §3.5), which the manifest blob alone does not carry.
+        `resolve()` below is this method plus one attribute access, so the
+        highest-satisfying comparison is written once.
+        """
         rows = (
             self.db.execute(
                 select(InstalledArtifact).where(
@@ -226,15 +232,19 @@ class StoreResolver:
             .all()
         )
         best: tuple[int, int, int] | None = None
-        best_manifest: dict[str, Any] | None = None
+        best_row: InstalledArtifact | None = None
         for row in rows:
             parsed = _parse_version(row.version)
             if parsed is None or not _satisfies(parsed, version_range):
                 continue
             if best is None or parsed > best:
                 best = parsed
-                best_manifest = row.manifest
-        return best_manifest
+                best_row = row
+        return best_row
+
+    def resolve(self, minigame_id: str, version_range: str) -> dict[str, Any] | None:
+        row = self.resolve_row(minigame_id, version_range)
+        return row.manifest if row is not None else None
 
 
 @dataclass
@@ -261,12 +271,16 @@ class PinnedResolver:
     db: Session
     pins: dict[str, tuple[str, str]]
 
-    def resolve(self, minigame_id: str, version_range: str) -> dict[str, Any] | None:
+    def resolve_row(self, minigame_id: str, version_range: str) -> InstalledArtifact | None:
+        """The winning row itself — see `StoreResolver.resolve_row` above
+        for why a caller needs the row rather than only its manifest.
+        `version_range` is ignored, same as `resolve()` below.
+        """
         pin = self.pins.get(minigame_id)
         if pin is None:
             return None
         version, image_digest = pin
-        row = self.db.execute(
+        return self.db.execute(
             select(InstalledArtifact).where(
                 InstalledArtifact.type == ArtifactType.minigame,
                 InstalledArtifact.artifact_id == minigame_id,
@@ -274,4 +288,7 @@ class PinnedResolver:
                 InstalledArtifact.image_digest == image_digest,
             )
         ).scalar_one_or_none()
+
+    def resolve(self, minigame_id: str, version_range: str) -> dict[str, Any] | None:
+        row = self.resolve_row(minigame_id, version_range)
         return row.manifest if row is not None else None

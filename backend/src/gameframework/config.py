@@ -1,6 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, cast
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +25,27 @@ class Settings(BaseSettings):
     # data-model.md §3.3 `blocked_address.expires_at`: how long a source
     # stays blocked once it crosses five consecutive failures.
     block_window_minutes: int = 15
+    # data-model.md §3.26 / M2-Task-Plan.md Task 9: the operator drop-in
+    # directory, "in the data volume". Unlike `data_dir`, `frontend_origin`
+    # and `cookie_domain` this takes a default rather than refusing one: it
+    # derives from a setting that is already required, and Task 3's compose
+    # volume interpolates its mount target from that same setting, so
+    # anything under it sits inside the persistent volume by construction.
+    # A separate required variable would reintroduce exactly the mismatch
+    # that closes — an operator typing a path outside the volume, whose
+    # dropped artifacts vanish on the next recreate. Stays overridable for
+    # an installation mounting an artifact share elsewhere.
+    dropin_dir: Path
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_dropin_dir(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        values = cast(dict[str, Any], data)
+        if not values.get("dropin_dir") and values.get("data_dir") is not None:
+            values["dropin_dir"] = Path(values["data_dir"]) / "dropin"
+        return values
 
 
 @lru_cache

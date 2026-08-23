@@ -33,6 +33,7 @@ def _settings(data_dir: Path) -> Settings:
         frontend_origin="https://app.event.example.com",
         data_dir=data_dir,
         cookie_domain="event.example.com",
+        dropin_dir=data_dir / "dropin",
     )
 
 

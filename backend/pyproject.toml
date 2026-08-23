@@ -8,10 +8,12 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "cryptography>=50.0.0",
     "fastapi>=0.115",
+    "gameframework-sdk",
     "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.13.0",
     "python-multipart>=0.0.32",
+    "pyyaml>=6.0.3",
     "sqlalchemy>=2.0.51",
     "uvicorn[standard]>=0.30",
 ]
@@ -70,3 +72,6 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["src/gameframework"]
+
+[tool.uv.sources]
+gameframework-sdk = { git = "https://github.com/grep-the-flag/gameframework-sdk.git", rev = "v0.0.2" }

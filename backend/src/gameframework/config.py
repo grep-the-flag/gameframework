@@ -1,9 +1,9 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
-from pydantic import model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -36,6 +36,31 @@ class Settings(BaseSettings):
     # dropped artifacts vanish on the next recreate. Stays overridable for
     # an installation mounting an artifact share elsewhere.
     dropin_dir: Path
+    # M2-Task-Plan.md Task 10 / sdk-contract-v1.md §3.4 check 14: labels this
+    # installation has put a framework surface on, beyond the contract's own
+    # floor. `gameframework_sdk.validation.RESERVED_HOST_LABELS` (currently
+    # {"callback"}) is refused by validate_event with or without a
+    # caller-supplied list — it is the SDK's own floor, not this
+    # installation's configuration — so a required variable here would make
+    # an operator restate a floor they cannot lower. Unlike `data_dir`,
+    # `frontend_origin` and `cookie_domain`, there is no wrong-but-plausible
+    # value to guess: an installation that names none has, correctly, put no
+    # framework surface under the event domain beyond the callback ingress
+    # (true by construction — M2 ships no frontend), so it earns no
+    # `.env.example`/compose guard either, exactly like `trusted_proxies`.
+    # `NoDecode` opts this field out of pydantic-settings' default JSON
+    # parsing for complex types: `GF_RESERVED_HOST_LABELS=` would otherwise
+    # fail `json.loads("")` instead of reading as "no labels" (an empty
+    # environment variable is a value, not an absence) — the validator below
+    # parses the comma-separated form `.env.example` documents instead.
+    reserved_host_labels: Annotated[list[str], NoDecode] = []
+
+    @field_validator("reserved_host_labels", mode="before")
+    @classmethod
+    def _parse_reserved_host_labels(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return [label.strip() for label in value.split(",") if label.strip()]
+        return value
 
     @model_validator(mode="before")
     @classmethod

@@ -8,12 +8,14 @@ does not add (see the Step 2 report).
 """
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, Header, Query, Response
+import yaml
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
+from starlette.datastructures import UploadFile
 
 from gameframework.api.deps import current_session
 from gameframework.api.errors import ProblemError, not_found
@@ -46,6 +48,9 @@ from gameframework.services.definitions import (
     clone as clone_definition,
 )
 from gameframework.services.definitions import (
+    dry_run as dry_run_definition,
+)
+from gameframework.services.definitions import (
     publish as publish_definition,
 )
 from gameframework.services.definitions import (
@@ -54,6 +59,8 @@ from gameframework.services.definitions import (
 from gameframework.services.definitions import (
     unpublish as unpublish_definition,
 )
+from gameframework.services.fetch import FetchError, fetch_hardened
+from gameframework.services.importer import import_definition, strip_url_userinfo
 from gameframework.services.sessions import AuthContext
 
 router = APIRouter(tags=["definitions"])
@@ -158,6 +165,64 @@ def create_definition(
     db.add(definition)
     db.commit()
     return _definition_out(definition, [])
+
+
+@router.post("/event-definitions/import", status_code=201)
+async def import_definition_route(
+    request: Request,
+    auth: AuthContext = Depends(current_session(Role.admin)),
+    db: DbSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """api-surface.md §2.6: "Import from registry URL, repo link, or
+    event.yaml upload" — a `multipart/form-data` `file` field carrying a
+    raw `event.yaml`, or a JSON body `{"url": "https://..."}` fetched
+    through the hardened pipeline (`fetch_hardened`, Task 11 Step 3), raw
+    or archived. Dispatched on `Content-Type` — not on which parser
+    happens to find something — because Starlette's multipart parser
+    consumes the request stream without buffering it the way `.json()`'s
+    cached `.body()` read does: calling both on one request raises
+    `RuntimeError: Stream consumed` rather than the second one answering
+    empty, so only one parser may ever run. Registered ahead of
+    `/event-definitions/{definition_id}` so `import` is never captured as
+    a `definition_id` path segment.
+    """
+    content_type = request.headers.get("content-type", "")
+    source: str | None = None
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("file")
+        if not isinstance(upload, UploadFile):
+            raise ProblemError(422, "event_yaml_required")
+        raw = await upload.read()
+    else:
+        try:
+            body = await request.json()
+        except ValueError as exc:
+            raise ProblemError(422, "event_yaml_required") from exc
+        url = cast(dict[str, Any], body).get("url") if isinstance(body, dict) else None
+        if not isinstance(url, str) or not url:
+            raise ProblemError(422, "event_yaml_required")
+        try:
+            raw = fetch_hardened(url)
+        except FetchError as exc:
+            raise ProblemError(422, exc.code) from exc
+        source = strip_url_userinfo(url)
+
+    try:
+        document = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ProblemError(422, "event_yaml_invalid", detail=str(exc)) from exc
+    if not isinstance(document, dict):
+        raise ProblemError(422, "event_yaml_invalid", detail="event.yaml must be a mapping")
+    document = cast(dict[str, Any], document)
+
+    try:
+        definition = import_definition(db, document, settings, source=source)
+    except DefinitionValidationError as exc:
+        raise ProblemError(422, "definition_invalid", extensions={"errors": exc.errors}) from exc
+
+    return _definition_out(definition, existing_challenges_document(db, definition))
 
 
 @router.get("/event-definitions/{definition_id}")
@@ -272,6 +337,23 @@ def _audit_lifecycle(
         target_id=definition.id,
         details={},
     )
+
+
+@router.post("/event-definitions/{definition_id}/dry-run")
+def dry_run_definition_route(
+    definition_id: uuid.UUID,
+    auth: AuthContext = Depends(current_session(Role.admin)),
+    db: DbSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """api-surface.md §2.6: the definition-scoped half of Phase 0 — static
+    validation over the definition's own pins (the local-artifact/image-
+    pull half is M3, out of scope here). No write: `dry_run_definition`
+    never mutates the row or commits, so this reports the same errors
+    `publish`/import would without freezing anything."""
+    definition = _get_definition(db, definition_id)
+    errors = dry_run_definition(db, definition, settings)
+    return {"errors": errors}
 
 
 @router.post("/event-definitions/{definition_id}/publish")

@@ -549,6 +549,25 @@ def _apply_whitelist_document_fields(
     db.flush()
 
 
+def dry_run(db: Session, definition: EventDefinition, settings: Settings) -> list[str]:
+    """`POST /event-definitions/{id}/dry-run` (api-surface.md §2.6): the
+    definition-scoped half of Phase 0 — the canonical pipeline over the
+    definition's own pins, exactly `publish`'s validation half below, with
+    no status change and nothing written. No new validation logic: the
+    same four calls `publish` makes, so a dry-run and a publish read the
+    same verdict from the same document. Works on a `draft` or a
+    `published` definition alike — `publish` restricts to `draft` because
+    only a draft may still *change* status, but dry-run never touches
+    status, so the plan's "no new validation logic" holds without
+    borrowing `publish`'s own guard.
+    """
+    challenge_rows = _load_challenges(db, definition.id)
+    document = build_document(definition, existing_challenges_document(db, definition))
+    resolver = pinned_resolver(db, challenge_rows)
+    errors, _ = validate_definition(document, resolver, settings)
+    return errors
+
+
 def publish(db: Session, definition: EventDefinition, settings: Settings) -> None:
     """api-surface.md §2.6: freezes structure; validation must pass —
     against `PinnedResolver`, since every challenge's minigame reference

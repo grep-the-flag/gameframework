@@ -229,6 +229,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "gameframework-sdk" },
+    { name = "httpx" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
@@ -240,7 +241,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -254,6 +254,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gameframework-sdk", git = "https://github.com/grep-the-flag/gameframework-sdk.git?rev=v0.0.2" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", specifier = ">=2.13.0" },
@@ -265,7 +266,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.27" },
     { name = "pyright", specifier = ">=1.1" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-cov", specifier = ">=5" },

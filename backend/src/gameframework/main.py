@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from gameframework.api.auth import router as auth_router
+from gameframework.api.catalog import router as catalog_router
 from gameframework.api.errors import ProblemError, problem_error_handler
 from gameframework.api.health import router as health_router
 from gameframework.api.info import router as info_router
@@ -15,6 +16,7 @@ from gameframework.api.teams import router as teams_router
 from gameframework.api.users import router as users_router
 from gameframework.config import get_settings
 from gameframework.db.session import get_session
+from gameframework.services.artifacts import refresh_dropin
 from gameframework.services.bootstrap import ensure_initial_admin
 from gameframework.services.secrets import ensure_signing_key
 
@@ -32,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     session_factory = app.dependency_overrides.get(get_session, get_session)
     with contextmanager(session_factory)() as db:
         ensure_initial_admin(db, settings)
+        refresh_dropin(db, settings)
     yield
 
 
@@ -54,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(users_router, prefix="/api/v1")
     app.include_router(participants_router, prefix="/api/v1")
     app.include_router(teams_router, prefix="/api/v1")
+    app.include_router(catalog_router, prefix="/api/v1")
     return app
 
 

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gameframework.db.models.authoring import Challenge
+from gameframework.db.models.feedback import AuditLog
 from gameframework.db.models.identity import Role, User
 from gameframework.db.models.play import TeamChallenge, TeamChallengeState
 from gameframework.db.models.runs import EventRun, RunStatus, Team
@@ -327,3 +328,30 @@ def test_start_materializes_team_challenge_rows_in_the_same_transaction_as_statu
         .all()
     )
     assert len(rows) == 2  # 1 team x 2 challenges
+
+
+def test_start_is_audited(client: TestClient, db_session: Session) -> None:
+    """M2-Task-Plan.md Task 14 Step 2 correction: api-surface.md §2.17's
+    "Run lifecycle, keep, legal hold, destroy" row is audited (✅) and
+    names `start` explicitly — "start is admin's, like the preflight that
+    gates it". Task 13 built the transition without this row; contrast the
+    **preflight** row directly above it in the same table, marked `—`: the
+    check stays unaudited by design, only the transition it gates is.
+    """
+    admin = _login_as_admin(client, db_session)
+    run_body, run_row, _teams = _setup_preflighted_run(client, db_session)
+
+    response = _start(client, str(run_body["id"]))
+    assert response.status_code == 200, response.text
+
+    rows = (
+        db_session.execute(
+            select(AuditLog).where(
+                AuditLog.target_id == run_row.id, AuditLog.action == "event_run_started"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].actor_user_id == admin.id

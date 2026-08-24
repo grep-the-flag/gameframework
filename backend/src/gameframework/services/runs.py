@@ -1,7 +1,12 @@
 """Event runs — creation with the §3.9 config snapshot, the "current run"
-resolution of api-surface.md §2.6 (M2-Task-Plan.md Task 12), and the
-`start` transition (M2-Task-Plan.md Task 13; data-model.md §3.12, §6).
+resolution of api-surface.md §2.6 (M2-Task-Plan.md Task 12), the `start`
+transition (M2-Task-Plan.md Task 13; data-model.md §3.12, §6), and
+`pause`/`resume`/`finish` plus the operational `PATCH` (M2-Task-Plan.md
+Task 14; data-model.md §3.9, §2.17).
 """
+
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,10 +18,32 @@ from gameframework.db.models.authoring import (
     DefinitionStatus,
     EventDefinition,
 )
+from gameframework.db.models.feedback import AuditScope
 from gameframework.db.models.identity import Role, User
 from gameframework.db.models.play import TeamChallenge, TeamChallengeState
 from gameframework.db.models.runs import EventParticipation, EventRun, ExportState, RunStatus, Team
+from gameframework.services.audit import write_audit
 from gameframework.services.preflight import RunNotCreatedError, compute_config_hash
+
+# ADR-0019's maximum retention window: 30 days past the grace deadline,
+# fixed rather than a setting — like fetch.py's caps, no installation has
+# asked to configure it.
+_HARD_DEADLINE_EXTRA_DAYS = 30
+
+# api-surface.md §2.6's run-operational whitelist, `grace_period_days`
+# included: the field-level admin-only gate on that one field is the
+# route's to enforce (api-surface.md §1 — "some fields on an otherwise-
+# reachable route are narrower than the route itself"), not a second
+# whitelist here.
+PATCH_WHITELIST_FIELDS = (
+    "scheduled_end",
+    "theme_ref",
+    "gamemaster_enabled",
+    "gamemaster_provider",
+    "gamemaster_endpoint",
+    "otp_lifetime_minutes",
+    "grace_period_days",
+)
 
 _ACTIVE_STATUSES = (RunStatus.running, RunStatus.paused)
 _READABLE_STATUSES = (RunStatus.running, RunStatus.paused, RunStatus.finished)
@@ -53,6 +80,18 @@ class PreflightNotCurrentError(Exception):
     one combined precondition (`preflight_passed_at` non-null **and** a
     matching `preflight_config_hash`), not two, and a client's remedy is
     identical either way — run the preflight again.
+    """
+
+
+class InvalidTransitionError(Exception):
+    """`pause`/`resume`/`finish` (api-surface.md §2.6): the run is not in
+    the status (or, for `finish`, one of the two statuses) that transition
+    requires — pause needs `running`, resume needs `paused`, finish needs
+    `running` or `paused`. Answered as `invalid_status_transition`, the
+    same code `RunNotCreatedError` answers for the preflight and `start`
+    (Task 12/13's "one code where the remedy is one"): a caller's next
+    step is always "read the run's current status", never a second name
+    for the same fact.
     """
 
 
@@ -103,7 +142,7 @@ def create_run(db: Session, definition: EventDefinition) -> EventRun:
     return run
 
 
-def start_run(db: Session, run: EventRun, settings: Settings) -> None:
+def start_run(db: Session, run: EventRun, settings: Settings, actor_user_id: UUID) -> None:
     """`POST /runs/{id}/transition` `start` (api-surface.md §2.6): admin-
     only at the route (checked there, not here — a role gate belongs
     beside the session, not the domain logic); `created`-only, refused
@@ -115,8 +154,15 @@ def start_run(db: Session, run: EventRun, settings: Settings) -> None:
     team_challenge row per team and per challenge of the run's
     definition, written in the same transaction as the status change" —
     `startable` where the challenge carries no dependency row (explicit or
-    reward-derived, data-model.md §3.12), `locked` otherwise. One
-    `db.commit()` covers both the inserts and the status write.
+    reward-derived, data-model.md §3.12), `locked` otherwise. `_audit_run`'s
+    own commit is what covers the inserts, the status write and the audit
+    row together (Task 14 Step 2 correction — Task 13 built this transition
+    and left it unaudited, even though api-surface.md §2.17's run-lifecycle
+    row is marked audited and names `start` by name: "start is admin's,
+    like the preflight that gates it"). The contrast is deliberate, not an
+    oversight to mirror here: the *preflight* row directly above it in the
+    same table is marked `—` — the check stays unaudited, only the
+    transition it gates is.
     """
     if run.status is not RunStatus.created:
         raise RunNotCreatedError()
@@ -170,7 +216,100 @@ def start_run(db: Session, run: EventRun, settings: Settings) -> None:
             )
 
     run.status = RunStatus.running
-    db.commit()
+    _audit_run(db, run, actor_user_id, "event_run_started")
+
+
+def _audit_run(db: Session, run: EventRun, actor_user_id: UUID, action: str) -> None:
+    """The `write_audit`/status-change ordering that lands both in one
+    transaction: it is called last, after every column mutation, so its
+    own `db.commit()` is the one that finalizes them together (the same
+    pattern `services/teams.py`'s `create_team` uses) — data-model.md §6.
+    """
+    write_audit(
+        db,
+        actor_user_id=actor_user_id,
+        scope=AuditScope.participant,
+        event_run_id=run.id,
+        action=action,
+        target_type="event_run",
+        target_id=run.id,
+        details={},
+    )
+
+
+def pause_run(db: Session, run: EventRun, actor_user_id: UUID) -> None:
+    """`POST /runs/{id}/transition` `pause` (api-surface.md §2.6): legal
+    from `running` only. Sets `paused_at` (data-model.md §3.9)."""
+    if run.status is not RunStatus.running:
+        raise InvalidTransitionError()
+    run.status = RunStatus.paused
+    run.paused_at = datetime.now(UTC)
+    _audit_run(db, run, actor_user_id, "event_run_paused")
+
+
+def resume_run(db: Session, run: EventRun, actor_user_id: UUID) -> None:
+    """`POST /runs/{id}/transition` `resume` (api-surface.md §2.6): legal
+    from `paused` only. Clears `paused_at` — one of the two transitions
+    that must (data-model.md §3.9's "null whenever status != paused").
+
+    Also pushes `scheduled_end` back by the paused duration: §3.9 defines
+    `paused_at` literally as "the moment scheduled_end is pushed back by",
+    so the column's documented purpose is this arithmetic, not the M3
+    scheduled job that later *acts* on `scheduled_end` — a value can be
+    wrong long before anything reads it on a schedule. `run.paused_at` is
+    still the pre-clear value here since it is read before being set to
+    `None` below; a run with no `scheduled_end` is left untouched, since
+    there is nothing to push.
+    """
+    if run.status is not RunStatus.paused:
+        raise InvalidTransitionError()
+    assert run.paused_at is not None  # invariant: status == paused implies paused_at is set
+    paused_duration = datetime.now(UTC) - run.paused_at
+    if run.scheduled_end is not None:
+        run.scheduled_end = run.scheduled_end + paused_duration
+    run.status = RunStatus.running
+    run.paused_at = None
+    _audit_run(db, run, actor_user_id, "event_run_resumed")
+
+
+def finish_run(db: Session, run: EventRun, actor_user_id: UUID) -> None:
+    """`POST /runs/{id}/transition` `finish` (api-surface.md §2.6): legal
+    from `running` or `paused` — always available in either, never
+    conditioned on how the run got there. Clears `paused_at` (data-model.md
+    §3.9's coupling reaches this transition too, not only `resume`) and
+    derives `finished_at`/`grace_deadline_at`/`hard_deadline_at` from the
+    run's own snapshotted `grace_period_days` and ADR-0019's fixed 30-day
+    maximum-retention extension. `datetime.now(UTC)` is read once into
+    `now` and every derived column is built from that one value, so the
+    three columns cannot observe three different instants.
+    """
+    if run.status not in (RunStatus.running, RunStatus.paused):
+        raise InvalidTransitionError()
+    now = datetime.now(UTC)
+    grace_deadline_at = now + timedelta(days=run.grace_period_days)
+    run.status = RunStatus.finished
+    run.paused_at = None
+    run.finished_at = now
+    run.grace_deadline_at = grace_deadline_at
+    run.hard_deadline_at = grace_deadline_at + timedelta(days=_HARD_DEADLINE_EXTRA_DAYS)
+    _audit_run(db, run, actor_user_id, "event_run_finished")
+
+
+def patch_run(db: Session, run: EventRun, actor_user_id: UUID, fields: dict[str, object]) -> None:
+    """`PATCH /runs/{id}` (api-surface.md §2.6): the run-operational
+    whitelist. The `grace_period_days` admin-only gate is resolved from
+    the live session before this is ever called (api/runs.py) — this
+    function assumes a caller who may write every key in `fields`.
+
+    None of `PATCH_WHITELIST_FIELDS` is an input to `compute_config_hash`
+    (`services/preflight.py`, M2-Task-Plan.md Task 13): a preflight
+    validates none of them in M2, so writing any of them must never stale
+    a passed one — the same principle that lets a post-publication content
+    fix skip a re-preflight (data-model.md §3.9).
+    """
+    for key, value in fields.items():
+        setattr(run, key, value)
+    _audit_run(db, run, actor_user_id, "event_run_patched")
 
 
 def resolve_current_run(db: Session, user: User | None) -> EventRun | None:

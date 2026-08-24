@@ -21,6 +21,13 @@ PROBLEM_CONTENT_TYPE = "application/problem+json"
 
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._~-]{1,255}$")
 
+# RFC 9457 fixes the meaning of these five members; an extension carrying
+# one of their names would silently replace it when merged into the body
+# (api-surface.md §1) — `status: "paused"` where a client expects the
+# integer `409` is worse than no extension at all. Guarded once, here,
+# rather than left to the discipline of each route that adds a member.
+_RESERVED_PROBLEM_MEMBERS = frozenset({"type", "title", "status", "detail", "instance"})
+
 
 class FieldError(TypedDict):
     field: str
@@ -92,6 +99,19 @@ async def problem_error_handler(request: Request, exc: Exception) -> JSONRespons
     if exc.fields is not None:
         body["fields"] = list(exc.fields)
     if exc.extensions is not None:
+        collisions = _RESERVED_PROBLEM_MEMBERS & exc.extensions.keys()
+        if collisions:
+            # Unconditional, not `assert`: this enforces a contract rather
+            # than documenting an invariant, and `python -O`/`PYTHONOPTIMIZE`
+            # strip `assert` statements — which would silently restore the
+            # `body.update()` overwrite this guard exists to prevent, in the
+            # one place api-surface.md §1 tells every route it need not
+            # check for itself (Working Agreement standard).
+            raise AssertionError(
+                f"ProblemError extensions collide with reserved Problem Details "
+                f"member(s) {sorted(collisions)} (api-surface.md §1) — rename "
+                f"at the raise site"
+            )
         body.update(exc.extensions)
     headers = {REQUEST_ID_HEADER: request_id}
     if isinstance(exc, RateLimitError):

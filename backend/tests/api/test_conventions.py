@@ -46,6 +46,11 @@ def route_problem() -> None:
     raise ProblemError(400, "test_problem", detail="something went wrong")
 
 
+@_router.get("/reserved-extension")
+def route_reserved_extension() -> None:
+    raise ProblemError(409, "test_conflict", extensions={"status": "conflict"})
+
+
 @_router.get("/forbidden")
 def route_forbidden() -> None:
     forbidden("role_denied")
@@ -112,6 +117,16 @@ def test_healthy_response_also_carries_x_request_id(client: TestClient) -> None:
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.headers["X-Request-Id"]
+
+
+def test_extension_reserved_member_is_refused(client: TestClient, conventions_router: None) -> None:
+    """An extension named `status` (or `type`/`title`/`detail`/`instance`)
+    would silently replace the RFC 9457 member it collides with when
+    merged into the body — a route author's mistake, not a runtime
+    condition, so the renderer refuses it outright rather than merging
+    over it (api-surface.md §1)."""
+    with pytest.raises(AssertionError):
+        client.get("/api/v1/_test/reserved-extension")
 
 
 # --------------------------------------------------------------------------

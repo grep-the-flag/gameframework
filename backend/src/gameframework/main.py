@@ -6,6 +6,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from gameframework.api.auth import router as auth_router
 from gameframework.api.catalog import router as catalog_router
+from gameframework.api.challenges import router as challenges_router
 from gameframework.api.definitions import router as definitions_router
 from gameframework.api.errors import ProblemError, problem_error_handler
 from gameframework.api.event import router as event_router
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(definitions_router, prefix="/api/v1")
     app.include_router(runs_router, prefix="/api/v1")
     app.include_router(event_router, prefix="/api/v1")
+    app.include_router(challenges_router, prefix="/api/v1")
     return app
 
 

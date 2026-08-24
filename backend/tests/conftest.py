@@ -32,7 +32,9 @@ from sqlalchemy.orm import Session
 from gameframework.config import get_settings
 from gameframework.db.models.authoring import (
     Challenge,
+    ChallengeDependency,
     DefinitionStatus,
+    DependencySource,
     EventDefinition,
     RewardDefinition,
     RewardType,
@@ -41,6 +43,7 @@ from gameframework.db.models.authoring import (
 )
 from gameframework.db.models.identity import BlockedAddress, Role, User
 from gameframework.db.models.infrastructure import ArtifactType, InstalledArtifact, Job, JobState
+from gameframework.db.models.play import TeamChallenge, TeamChallengeState
 from gameframework.db.models.runs import EventParticipation, EventRun, ExportState, RunStatus, Team
 from gameframework.db.models.runtime import (
     InstanceHealth,
@@ -350,6 +353,21 @@ def make_challenge(
     return challenge
 
 
+def make_challenge_dependency(
+    db_session: Session, challenge: Challenge, depends_on: Challenge, **overrides: object
+) -> ChallengeDependency:
+    defaults: dict[str, Any] = dict(
+        challenge_id=challenge.id,
+        depends_on_id=depends_on.id,
+        source=DependencySource.explicit,
+    )
+    defaults.update(overrides)
+    dependency = ChallengeDependency(**defaults)  # type: ignore[arg-type]
+    db_session.add(dependency)
+    db_session.commit()
+    return dependency
+
+
 def make_event_run(
     db_session: Session, definition: EventDefinition | None = None, **overrides: object
 ) -> EventRun:
@@ -387,6 +405,22 @@ def make_team(db_session: Session, run: EventRun | None = None, **overrides: obj
     db_session.add(team)
     db_session.commit()
     return team
+
+
+def make_team_challenge(
+    db_session: Session, team: Team, challenge: Challenge, **overrides: object
+) -> TeamChallenge:
+    defaults: dict[str, Any] = dict(
+        team_id=team.id,
+        challenge_id=challenge.id,
+        state=TeamChallengeState.startable,
+        provision_attempts=0,
+    )
+    defaults.update(overrides)
+    team_challenge = TeamChallenge(**defaults)  # type: ignore[arg-type]
+    db_session.add(team_challenge)
+    db_session.commit()
+    return team_challenge
 
 
 def make_participation(

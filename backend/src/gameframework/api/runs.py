@@ -1,12 +1,14 @@
-"""`POST /event-definitions/{id}/runs` (api-surface.md §2.6, §2.17;
-data-model.md §3.9; M2-Task-Plan.md Task 12).
+"""`POST /event-definitions/{id}/runs`, `POST /runs/{id}/transition`,
+`PATCH /runs/{id}` (api-surface.md §2.6, §2.17; data-model.md §3.9;
+M2-Task-Plan.md Task 12, 13, 14).
 """
 
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session as DbSession
 
 from gameframework.api.deps import current_session, require_role
@@ -20,8 +22,13 @@ from gameframework.services.preflight import RunNotCreatedError, run_preflight
 from gameframework.services.runs import (
     ActiveRunExistsError,
     DefinitionNotPublishedError,
+    InvalidTransitionError,
     PreflightNotCurrentError,
     create_run,
+    finish_run,
+    patch_run,
+    pause_run,
+    resume_run,
     start_run,
 )
 from gameframework.services.sessions import AuthContext
@@ -59,6 +66,7 @@ def _run_out(run: EventRun) -> dict[str, object]:
         "language_default": run.language_default,
         "grace_period_days": run.grace_period_days,
         "otp_lifetime_minutes": run.otp_lifetime_minutes,
+        "scheduled_end": run.scheduled_end.isoformat() if run.scheduled_end else None,
     }
 
 
@@ -101,10 +109,14 @@ def preflight_route(
 
 
 class TransitionRequest(BaseModel):
-    # `pause`/`resume`/`finish` are Task 14's; this Literal narrows to
-    # exactly what this task implements rather than accepting values no
-    # service function yet handles.
-    action: Literal["start"]
+    action: Literal["start", "pause", "resume", "finish"]
+
+
+_PAUSE_RESUME_FINISH = {
+    "pause": pause_run,
+    "resume": resume_run,
+    "finish": finish_run,
+}
 
 
 @router.post("/runs/{run_id}/transition")
@@ -115,19 +127,69 @@ def transition_route(
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
-    """api-surface.md §2.6: `start\\|pause\\|resume\\|finish` — this task
-    implements `start` only. `start` is admin-only (checked here, at the
-    action level, beside the route's broader admin+gameadmin reach that
-    `pause`/`resume`/`finish` will use), `409`s against a second
-    concurrent run, and `409`s without a current successful preflight."""
+    """api-surface.md §2.6: `start\\|pause\\|resume\\|finish`. `start` is
+    admin-only (checked here, at the action level, beside the route's
+    broader admin+gameadmin reach that `pause`/`resume`/`finish` use),
+    `409`s against a second concurrent run, and `409`s without a current
+    successful preflight. `pause`/`resume`/`finish` share one code for
+    "wrong status for this transition", `invalid_status_transition` —
+    the same one `start` answers via `RunNotCreatedError`."""
     run = _get_run(db, run_id)
-    require_role(auth, Role.admin)
+    if body.action == "start":
+        require_role(auth, Role.admin)
+        try:
+            start_run(db, run, settings, auth.user.id)
+        except RunNotCreatedError as exc:
+            raise ProblemError(409, "invalid_status_transition") from exc
+        except ActiveRunExistsError as exc:
+            raise ProblemError(409, "run_active") from exc
+        except PreflightNotCurrentError as exc:
+            raise ProblemError(409, "preflight_not_current") from exc
+        return _run_out(run)
+
     try:
-        start_run(db, run, settings)
-    except RunNotCreatedError as exc:
+        _PAUSE_RESUME_FINISH[body.action](db, run, auth.user.id)
+    except InvalidTransitionError as exc:
         raise ProblemError(409, "invalid_status_transition") from exc
-    except ActiveRunExistsError as exc:
-        raise ProblemError(409, "run_active") from exc
-    except PreflightNotCurrentError as exc:
-        raise ProblemError(409, "preflight_not_current") from exc
+    return _run_out(run)
+
+
+class PatchRunRequest(BaseModel):
+    """api-surface.md §2.6's run-operational whitelist. `extra="allow"`
+    lets an unrecognized key reach `model_extra` rather than being
+    silently dropped, which is what lets the route refuse it explicitly
+    (`field_not_writable`) instead of accepting a request that named a
+    field it never touched."""
+
+    model_config = ConfigDict(extra="allow")
+
+    scheduled_end: datetime | None = None
+    theme_ref: str | None = None
+    gamemaster_enabled: bool | None = None
+    gamemaster_provider: str | None = None
+    gamemaster_endpoint: str | None = None
+    otp_lifetime_minutes: int | None = None
+    grace_period_days: int | None = None
+
+
+@router.patch("/runs/{run_id}")
+def patch_run_route(
+    run_id: uuid.UUID,
+    body: PatchRunRequest,
+    auth: AuthContext = Depends(current_session(Role.admin, Role.gameadmin)),
+    db: DbSession = Depends(get_session),
+) -> dict[str, object]:
+    """api-surface.md §2.6/§2.17: the run-operational whitelist.
+    `grace_period_days` is admin-only — the GDPR clock (ADR-0019), so it
+    sits with `keep`/`legal-hold`/`destroy` on the admin side rather than
+    with the rest of this whitelist."""
+    run = _get_run(db, run_id)
+    if body.model_extra:
+        raise ProblemError(
+            422, "field_not_writable", extensions={"fields": sorted(body.model_extra)}
+        )
+    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "grace_period_days" in fields:
+        require_role(auth, Role.admin)
+    patch_run(db, run, auth.user.id, fields)
     return _run_out(run)

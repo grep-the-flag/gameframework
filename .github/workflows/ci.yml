@@ -69,6 +69,17 @@ jobs:
       # derived from it. Bare domain, no leading dot — the app supplies
       # the dot itself.
       GF_COOKIE_DOMAIN: event.example.com
+      # player_tcp_host/event_domain have no default either (M2 Task 13):
+      # the run preflight resolves <label>.event_domain into an instance
+      # hostname and hashes both into its config hash, and neither has a
+      # plausible-looking wrong value to fall back on.
+      GF_PLAYER_TCP_HOST: event.example.com
+      GF_EVENT_DOMAIN: event.example.com
+      # tcp_port_range has no default either, though for a different reason
+      # than the settings above: a range too small makes the preflight
+      # refuse loudly rather than fail silently. It is required because an
+      # operator who never chose one has opened no firewall rule for it.
+      GF_TCP_PORT_RANGE: 20000-29999
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9   # v9.0.0

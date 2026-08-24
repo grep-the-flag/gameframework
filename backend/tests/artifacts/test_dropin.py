@@ -47,6 +47,9 @@ def _settings(dropin_dir: Path) -> Settings:
         data_dir=dropin_dir.parent,
         cookie_domain="event.example.com",
         dropin_dir=dropin_dir,
+        player_tcp_host="event.example.com",
+        event_domain="event.example.com",
+        tcp_port_range=(20000, 29999),
     )
 
 
@@ -63,6 +66,9 @@ def test_dropin_dir_defaults_to_a_subdirectory_of_data_dir(tmp_path: Path) -> No
         frontend_origin="https://app.event.example.com",
         data_dir=tmp_path / "data",
         cookie_domain="event.example.com",
+        player_tcp_host="event.example.com",
+        event_domain="event.example.com",
+        tcp_port_range=(20000, 29999),
     )
 
     assert settings.dropin_dir == tmp_path / "data" / "dropin"
@@ -104,6 +110,9 @@ def test_dropin_dir_override_is_kept_rather_than_replaced(tmp_path: Path) -> Non
         data_dir=tmp_path / "data",
         cookie_domain="event.example.com",
         dropin_dir=override,
+        player_tcp_host="event.example.com",
+        event_domain="event.example.com",
+        tcp_port_range=(20000, 29999),
     )
 
     assert settings.dropin_dir == override

@@ -34,6 +34,9 @@ def _settings(data_dir: Path) -> Settings:
         data_dir=data_dir,
         cookie_domain="event.example.com",
         dropin_dir=data_dir / "dropin",
+        player_tcp_host="event.example.com",
+        event_domain="event.example.com",
+        tcp_port_range=(20000, 29999),
     )
 
 

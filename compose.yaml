@@ -27,6 +27,7 @@ services:
       GF_PLAYER_TCP_HOST: ${GF_PLAYER_TCP_HOST:?set GF_PLAYER_TCP_HOST in .env}
       GF_EVENT_DOMAIN: ${GF_EVENT_DOMAIN:?set GF_EVENT_DOMAIN in .env}
       GF_TCP_PORT_RANGE: ${GF_TCP_PORT_RANGE:?set GF_TCP_PORT_RANGE in .env}
+      GF_VAULT_KEY: ${GF_VAULT_KEY:-}
     command: sh -c "uv run alembic upgrade head && uv run uvicorn gameframework.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "${BACKEND_PORT:-8000}:8000"

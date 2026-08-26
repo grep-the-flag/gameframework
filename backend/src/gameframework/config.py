@@ -1,16 +1,38 @@
+import base64
+import binascii
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, NamedTuple, cast
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _TCP_PORT_RANGE_RE = re.compile(r"^(\d+)-(\d+)$")
+_VAULT_KEY_RE = re.compile(r"^(\d+):(.+)$")
+# data-model.md §7: AES-256-GCM. M2-Task-Plan.md Task 17: the envelope's
+# key_version occupies exactly 1 byte, so a configured version above 255
+# would overflow it at the first encrypt() rather than at startup.
+_VAULT_KEY_BYTES = 32
+_VAULT_KEY_MAX_VERSION = 255
+
+
+class VaultKey(NamedTuple):
+    """The parsed `GF_VAULT_KEY` (M2-Task-Plan.md Task 17). Version and key
+    material travel as one string, `<version>:<base64-key>`, never as two
+    independent settings: two values that must agree but can be edited
+    separately are a divergence on a timer — an operator rotating the key
+    and forgetting the version, or the reverse — and in M2 nothing would
+    catch it, since only one key is ever configured at a time and AES-GCM's
+    tag only catches a *wrong* key, not a *mislabeled* one.
+    """
+
+    version: int
+    key: bytes
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="GF_")
+    model_config = SettingsConfigDict(env_prefix="GF_", hide_input_in_errors=True)
 
     database_url: str
     frontend_origin: str
@@ -96,6 +118,48 @@ class Settings(BaseSettings):
     # silently coerced, and so is the blank form (`GF_TCP_PORT_RANGE=`),
     # which is a value and not an absence.
     tcp_port_range: Annotated[tuple[int, int], NoDecode]
+    # M2-Task-Plan.md Task 17, data-model.md §7 / ADR-0010: the vault's
+    # installation key, from the deployment's secret mechanism. Deliberately
+    # NOT in the no-default family with `data_dir`/`frontend_origin`/
+    # `cookie_domain`/`player_tcp_host`/`event_domain`: §7's failure
+    # behavior ("a missing key fails closed: provisioning reports the vault
+    # as unavailable") describes something that happens when the vault is
+    # *used*, not when the app boots, and a required field would refuse to
+    # start an installation that has not configured the vault yet — a
+    # stronger claim than §7 makes. `services.vault.VaultUnavailableError`
+    # is the boundary that actually enforces "missing"; the run preflight
+    # (§2.6) is where that becomes an operator-facing readiness check
+    # (M3's wiring, not this task's). A blank value (`GF_VAULT_KEY=`, the
+    # line an operator uncomments and leaves empty) is treated the same as
+    # absent, matching `reserved_host_labels` above, not as a malformed
+    # value to reject. `repr=False`: unlike every other field here, this
+    # one holds key material and must never render — see
+    # `services/vault.py` for why logs carry `key_version` only.
+    vault_key: Annotated[VaultKey | None, Field(repr=False)] = None
+
+    @field_validator("vault_key", mode="before")
+    @classmethod
+    def _parse_vault_key(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        if value == "":
+            return None
+        match = _VAULT_KEY_RE.match(value)
+        if match is None:
+            raise ValueError("GF_VAULT_KEY must be '<version>:<base64-key>', e.g. '1:...'")
+        version = int(match.group(1))
+        if not (1 <= version <= _VAULT_KEY_MAX_VERSION):
+            raise ValueError(f"GF_VAULT_KEY version must be 1-{_VAULT_KEY_MAX_VERSION}")
+        try:
+            key_bytes = base64.b64decode(match.group(2), validate=True)
+        except binascii.Error as exc:
+            raise ValueError("GF_VAULT_KEY key segment is not valid base64") from exc
+        if len(key_bytes) != _VAULT_KEY_BYTES:
+            raise ValueError(
+                f"GF_VAULT_KEY must decode to a {_VAULT_KEY_BYTES}-byte AES-256 key, "
+                f"got {len(key_bytes)} bytes"
+            )
+        return VaultKey(version=version, key=key_bytes)
 
     @field_validator("reserved_host_labels", mode="before")
     @classmethod

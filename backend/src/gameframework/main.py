@@ -21,6 +21,7 @@ from gameframework.api.users import router as users_router
 from gameframework.config import get_settings
 from gameframework.db.session import get_session
 from gameframework.services.artifacts import refresh_dropin
+from gameframework.services.blocking import log_trusted_proxies_model
 from gameframework.services.bootstrap import ensure_initial_admin
 from gameframework.services.secrets import ensure_signing_key
 
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    log_trusted_proxies_model(settings)
     app = FastAPI(title="Gameframework", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,

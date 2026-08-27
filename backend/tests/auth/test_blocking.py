@@ -32,12 +32,15 @@ admin's release, and the `code` is what a client branches on to tell them
 apart.
 """
 
+import logging
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from unittest.mock import Mock
 
 import httpx
 import jwt
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +51,11 @@ from gameframework.db.models.identity import Session as SessionModel
 from gameframework.db.models.runs import RunStatus
 from gameframework.db.session import get_session
 from gameframework.main import app
+from gameframework.services.blocking import (
+    log_trusted_proxies_model,
+    normalize_source,
+    resolve_client_address,
+)
 from gameframework.services.passwords import hash_password
 from gameframework.services.secrets import ensure_signing_key
 
@@ -325,16 +333,174 @@ def test_established_session_from_a_blocked_source_keeps_working(db_session: Ses
         assert response.json()["user_id"] == str(admin.id)
 
 
+def test_untrusted_peer_ignores_a_well_formed_forwarded_for_header(db_session: Session) -> None:
+    """The new rule (ADR-0007, post-Task-20 revision): `trusted_proxies`
+    names which addresses the *one* direct proxy may present as, not a
+    chain — so a socket peer outside that set gets its header ignored
+    outright, however well-formed. No `trusted_proxies` is configured at
+    all here (the default, `[]`), which api-surface.md/ADR-0007 both
+    already treat as "peer decides, unconditionally" — this is the
+    plainest case that could let a header substitute for the peer if the
+    gate check were ever accidentally skipped.
+    """
+    username = "admin-untrusted-peer"
+    password = "Correct-Passw0rd!"
+    make_user(
+        db_session,
+        username=username,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password(password),
+    )
+
+    with _source_client(db_session, "203.0.113.200") as attacker:
+        response = attacker.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "wrong-password"},
+            headers={"X-Forwarded-For": "198.51.100.1"},
+        )
+        assert response.status_code == 401
+
+    blocked_addresses = {
+        str(row.address) for row in db_session.execute(select(BlockedAddress)).scalars().all()
+    }
+    assert blocked_addresses == {"203.0.113.200"}, (
+        f"expected the failure counted against the real socket peer, "
+        f"not the header content, got {blocked_addresses}"
+    )
+
+
+def test_trusted_peer_consults_only_its_own_rightmost_append(db_session: Session) -> None:
+    """The multi-hop exploit this branch closes (M2 security gate Task 20,
+    finding: High). `trusted_proxies` now names the *set of addresses the
+    one direct proxy may present as* (an HA pair), never a chain to walk —
+    so even with two addresses configured, only the socket peer's own
+    rightmost append is ever consulted. Five failed logins, each carrying
+    a *different* forged left-hand entry but the identical rightmost value
+    (what the trusted peer actually appended), must all count against that
+    one rightmost value — closing the rotation-evasion bypass the old
+    unbounded walk allowed.
+    """
+    username = "admin-behind-ha-pair-proxy"
+    password = "Correct-Passw0rd!"
+    make_user(
+        db_session,
+        username=username,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password(password),
+    )
+    # `genuine_rightmost` deliberately matches one of the two configured
+    # `trusted_proxies` entries -- this is the exact shape the original
+    # exploit needed: an old, unbounded walk would see this value, decide
+    # it is "itself a trusted proxy", skip it, and keep walking into
+    # attacker territory. The fix must stop at the rightmost entry
+    # regardless of whether its value also happens to match a trusted
+    # CIDR -- that coincidence is not a license to keep walking.
+    genuine_rightmost = "10.0.0.5"
+    forged_left_values = [
+        "203.0.113.11",
+        "203.0.113.12",
+        "203.0.113.13",
+        "203.0.113.14",
+        "203.0.113.15",
+    ]
+
+    with _source_client(db_session, "10.0.0.6") as proxy_client:
+        settings = get_settings().model_copy(
+            update={"trusted_proxies": ["10.0.0.5/32", "10.0.0.6/32"]}
+        )
+        app.dependency_overrides[get_settings] = lambda: settings
+        try:
+            for forged in forged_left_values:
+                response = proxy_client.post(
+                    "/api/v1/auth/login",
+                    json={"username": username, "password": "wrong-password"},
+                    headers={"X-Forwarded-For": f"{forged}, {genuine_rightmost}"},
+                )
+                assert response.status_code == 401
+
+            sixth = proxy_client.post(
+                "/api/v1/auth/login",
+                json={"username": username, "password": password},
+                headers={"X-Forwarded-For": f"203.0.113.16, {genuine_rightmost}"},
+            )
+            _assert_blocked(sixth)
+        finally:
+            app.dependency_overrides.pop(get_settings, None)
+
+    blocked_addresses = {
+        str(row.address) for row in db_session.execute(select(BlockedAddress)).scalars().all()
+    }
+    assert blocked_addresses == {genuine_rightmost}, (
+        f"expected all five failures to land on the one genuine rightmost "
+        f"append regardless of the forged prefix, got {blocked_addresses}"
+    )
+
+
+def test_trusted_peer_cannot_have_a_forged_left_entry_plant_a_block_on_it(
+    db_session: Session,
+) -> None:
+    """The inverse of the rotation test above: an attacker repeats a
+    *chosen victim address* as the forged left-hand entry, hoping to plant
+    a block on it. Since only the rightmost (genuinely peer-appended)
+    entry is ever consulted, the victim address the attacker names is
+    never read at all — the block can only ever land on whatever the
+    trusted peer actually observed, never on an address of the attacker's
+    choosing.
+    """
+    username = "admin-behind-ha-pair-proxy-2"
+    password = "Correct-Passw0rd!"
+    make_user(
+        db_session,
+        username=username,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password(password),
+    )
+    victim_address = "198.51.100.77"
+    # Same reasoning as the rotation test above: the genuine rightmost
+    # value deliberately matches a configured `trusted_proxies` entry, so
+    # the old, unbounded walk would skip it and keep going, letting the
+    # attacker's own choice of `victim_address` become "the client".
+    genuine_rightmost = "10.0.0.5"
+
+    with _source_client(db_session, "10.0.0.6") as proxy_client:
+        settings = get_settings().model_copy(
+            update={"trusted_proxies": ["10.0.0.5/32", "10.0.0.6/32"]}
+        )
+        app.dependency_overrides[get_settings] = lambda: settings
+        try:
+            for _ in range(5):
+                response = proxy_client.post(
+                    "/api/v1/auth/login",
+                    json={"username": username, "password": "wrong-password"},
+                    headers={"X-Forwarded-For": f"{victim_address}, {genuine_rightmost}"},
+                )
+                assert response.status_code == 401
+        finally:
+            app.dependency_overrides.pop(get_settings, None)
+
+    blocked_addresses = {
+        str(row.address) for row in db_session.execute(select(BlockedAddress)).scalars().all()
+    }
+    assert victim_address not in "".join(blocked_addresses), (
+        f"the attacker's chosen victim address must never be reachable as "
+        f"a block target, got {blocked_addresses}"
+    )
+    assert blocked_addresses == {genuine_rightmost}
+
+
 def test_forged_forwarded_for_neither_evades_nor_plants_a_block(db_session: Session) -> None:
-    """ADR-0007 rule 2: "walked from the rightmost... skipping every entry
-    that is itself a trusted proxy address; the first entry that is not is
-    the client." The socket peer is a configured trusted proxy; each of
-    the five attempts prepends a *different* forged address to the left
-    (a fresh one per attempt, the exact evasion rule 1 names) while the
-    real attacker's address stays rightmost and constant. A test that
-    skips `trusted_proxies` proves nothing here (this file's own
-    docstring): with none configured the header is ignored outright, so a
-    left-to-right implementation would pass too.
+    """ADR-0007 rule 2 (post-Task-20 revision): the socket peer is the
+    *only* address `trusted_proxies` names here, so its own rightmost
+    append is consulted — never anything prepended to the left of it.
+    Each of the five attempts prepends a *different* forged address to
+    the left while the real attacker's address stays rightmost and
+    constant; the forged prefixes are never even read. A test that skips
+    `trusted_proxies` proves nothing here (this file's own docstring):
+    with none configured the header is ignored outright, so an
+    implementation that read no part of it would pass too.
     """
     username = "admin-behind-forged-header"
     password = "Correct-Passw0rd!"
@@ -662,3 +828,134 @@ def test_activation_resets_the_failure_counter(db_session: Session) -> None:
         )
         assert response.status_code == 200
         assert SESSION_COOKIE in response.cookies
+
+
+def test_a_rightmost_entry_that_does_not_parse_as_an_address_falls_back_to_the_peer() -> None:
+    """A trusted peer's own append is expected to be a real address; one
+    that is not (a malformed proxy, or a trusted peer that itself forwards
+    something it never validated) is a claim `normalize_source` cannot
+    parse, not evidence of a client. Unit-level: this is `resolve_client_
+    address`'s own contract, independent of the route that calls it.
+    """
+    request = Mock()
+    request.client = Mock(host="10.0.0.6")
+    request.headers = {"x-forwarded-for": "not-an-ip"}
+    settings = get_settings().model_copy(update={"trusted_proxies": ["10.0.0.6/32"]})
+
+    resolved = resolve_client_address(request, settings)
+    assert resolved == "10.0.0.6"
+
+
+def test_garbage_forwarded_for_from_a_trusted_peer_does_not_crash_the_request(
+    db_session: Session,
+) -> None:
+    """The old unbounded walk let a non-IP entry reach `normalize_source`
+    unguarded and crash with a `500` (M2 security gate Task 20, finding:
+    Low). Confirms the actual route: a trusted peer sending a malformed
+    header still gets an ordinary `401`, and the failure counts against
+    the peer itself.
+    """
+    username = "admin-behind-garbage-header"
+    password = "Correct-Passw0rd!"
+    make_user(
+        db_session,
+        username=username,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password(password),
+    )
+
+    with _source_client(db_session, "10.0.0.6") as proxy_client:
+        settings = get_settings().model_copy(update={"trusted_proxies": ["10.0.0.6/32"]})
+        app.dependency_overrides[get_settings] = lambda: settings
+        try:
+            response = proxy_client.post(
+                "/api/v1/auth/login",
+                json={"username": username, "password": "wrong-password"},
+                headers={"X-Forwarded-For": "not-an-ip"},
+            )
+            assert response.status_code == 401
+        finally:
+            app.dependency_overrides.pop(get_settings, None)
+
+    blocked_addresses = {
+        str(row.address) for row in db_session.execute(select(BlockedAddress)).scalars().all()
+    }
+    assert blocked_addresses == {"10.0.0.6"}
+
+
+def test_ipv4_mapped_ipv6_normalizes_to_the_same_slash_32_as_the_plain_ipv4_form() -> None:
+    """M2 security gate Task 20, finding: Low. `::ffff:a.b.c.d` names the
+    same host as `a.b.c.d`; the mapped payload sits in the address's last
+    32 bits, which a naive `/64` truncation discards entirely, collapsing
+    every mapped address to the identical key `::/64` regardless of which
+    real host it names. Unwrapping it first is what keeps this a real
+    per-host key rather than one shared bucket.
+    """
+    plain = normalize_source("203.0.113.9")
+    mapped = normalize_source("::ffff:203.0.113.9")
+    assert mapped == plain == "203.0.113.9/32"
+
+
+def test_distinct_ipv4_mapped_ipv6_hosts_normalize_to_distinct_keys() -> None:
+    hosts = ["::ffff:203.0.113.9", "::ffff:198.51.100.1", "::ffff:8.8.8.8"]
+    keys = {normalize_source(host) for host in hosts}
+    assert keys == {"203.0.113.9/32", "198.51.100.1/32", "8.8.8.8/32"}
+
+
+def test_any_configured_trusted_proxies_logs_the_model_at_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Daniel's correction to this branch's first draft: there is no
+    observable signal that separates a correctly configured HA pair from
+    an actual chained hop — that is the same indistinguishability the
+    finding itself rests on — so `log_trusted_proxies_model` cannot
+    condition on entry count without firing on every correct HA
+    deployment and teaching operators to ignore it. It states the model
+    unconditionally, at `INFO`, for *any* non-empty configuration —
+    proven here with a single entry, the case a length-conditioned
+    warning would have stayed silent for. Called directly (not through
+    `create_app()`/the `lru_cache`d `get_settings()`) so the test binds
+    the log line to the settings it was actually given.
+    """
+    settings = get_settings().model_copy(update={"trusted_proxies": ["10.0.0.6/32"]})
+
+    with caplog.at_level(logging.INFO):
+        log_trusted_proxies_model(settings)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        record.levelno == logging.INFO
+        and "trusted_proxies" in record.getMessage()
+        and "direct" in record.getMessage()
+        for record in caplog.records
+    ), f"expected an INFO line stating the trusted-proxy model, got {messages!r}"
+
+
+def test_multiple_trusted_proxies_also_logs_the_same_model_at_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same line fires for an HA pair (several entries) as for one —
+    the model does not change with the count, and neither does the log
+    level: this must never become a `WARNING` a correct HA deployment
+    trips on every boot.
+    """
+    settings = get_settings().model_copy(update={"trusted_proxies": ["10.0.0.5/32", "10.0.0.6/32"]})
+
+    with caplog.at_level(logging.INFO):
+        log_trusted_proxies_model(settings)
+
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.INFO
+
+
+def test_no_trusted_proxies_configured_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    """The default, empty `trusted_proxies` — no direct proxy configured
+    at all — has no model to state, so nothing logs.
+    """
+    settings = get_settings().model_copy(update={"trusted_proxies": []})
+
+    with caplog.at_level(logging.INFO):
+        log_trusted_proxies_model(settings)
+
+    assert caplog.records == []

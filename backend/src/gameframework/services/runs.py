@@ -55,6 +55,15 @@ _READABLE_STATUSES = (RunStatus.running, RunStatus.paused, RunStatus.finished)
 _DEFAULT_OTP_LIFETIME_MINUTES = 5
 
 
+class FieldNotWhitelistedError(Exception):
+    """`patch_run`'s own defense (M2 security gate Task 20, finding: Low):
+    a key in `fields` that is not in `PATCH_WHITELIST_FIELDS`. Never
+    reached through `patch_run_route`, which filters to exactly that set
+    before calling here — this is the function's own guard against any
+    other caller.
+    """
+
+
 class DefinitionNotPublishedError(Exception):
     """`POST /event-definitions/{id}/runs` (api-surface.md §2.6): a run may
     only be created from a `published` definition — structure is frozen
@@ -299,7 +308,18 @@ def patch_run(db: Session, run: EventRun, actor_user_id: UUID, fields: dict[str,
     """`PATCH /runs/{id}` (api-surface.md §2.6): the run-operational
     whitelist. The `grace_period_days` admin-only gate is resolved from
     the live session before this is ever called (api/runs.py) — this
-    function assumes a caller who may write every key in `fields`.
+    function assumes a caller who may write every key in `fields`, and
+    now refuses one that is not in `PATCH_WHITELIST_FIELDS` itself (M2
+    security gate Task 20, finding: Low) rather than trusting the
+    caller's own filtering — `patch_run_route` is correctly guarded today
+    (`PatchRunRequest`'s `extra="allow"` plus its explicit `model_extra`
+    check, bound to this same whitelist by a structural test), but this
+    function's own docstring names "the run-operational whitelist" as
+    something it enforces, and it is the one place any future run-
+    patching logic would land. `services/definitions.py`'s
+    `_apply_whitelist_document_fields` refuses an unlisted field
+    regardless of caller for the same reason; this brings `patch_run`
+    into line with it.
 
     None of `PATCH_WHITELIST_FIELDS` is an input to `compute_config_hash`
     (`services/preflight.py`, M2-Task-Plan.md Task 13): a preflight
@@ -307,6 +327,9 @@ def patch_run(db: Session, run: EventRun, actor_user_id: UUID, fields: dict[str,
     a passed one — the same principle that lets a post-publication content
     fix skip a re-preflight (data-model.md §3.9).
     """
+    for key in fields:
+        if key not in PATCH_WHITELIST_FIELDS:
+            raise FieldNotWhitelistedError(key)
     for key, value in fields.items():
         setattr(run, key, value)
     _audit_run(db, run, actor_user_id, "event_run_patched")

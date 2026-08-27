@@ -128,6 +128,13 @@ class TeamRunMismatchError(Exception):
     """
 
 
+# M2 security gate Task 20, finding: Low. AES-256's own key size — restated
+# here rather than imported from config.py's private `_VAULT_KEY_BYTES`,
+# since both modules derive it independently from the same external fact
+# (the AES-256-GCM spec), not from each other.
+_KEY_SIZE = 32
+
+
 class VaultCrypto:
     """The envelope primitive: `encrypt`/`decrypt` over the layout described
     in the module docstring. `store_vault_value`/`read_vault_value` below
@@ -138,6 +145,20 @@ class VaultCrypto:
         if settings.vault_key is None:
             raise VaultUnavailableError("no vault key configured (GF_VAULT_KEY unset)")
         self._version, self._key = settings.vault_key
+        # M2 security gate Task 20, finding: Low. `Settings`' own validator
+        # (config.py's `_parse_vault_key`) is what enforces exactly 32
+        # bytes today, but that runs only at `Settings` construction — this
+        # module's own docstring states "AES-256-GCM" as a fixed fact, and
+        # a fact stated only in a caller's validator is not enforced by the
+        # module that depends on it. `cryptography`'s AESGCM constructor
+        # accepts any of the three standard AES key sizes (16/24/32 bytes)
+        # and would silently encrypt under AES-128-GCM or AES-192-GCM for a
+        # 16- or 24-byte key rather than rejecting it — a real gap this
+        # closes independently of whatever constructed `settings`.
+        if len(self._key) != _KEY_SIZE:
+            raise ValueError(
+                f"vault key is {len(self._key)} bytes; AES-256-GCM requires exactly {_KEY_SIZE}"
+            )
 
     def encrypt(self, plaintext: bytes, row_pk: uuid.UUID) -> bytes:
         nonce = os.urandom(_NONCE_SIZE)

@@ -28,10 +28,15 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
-from gameframework.config import Settings
+from gameframework.config import Settings, VaultKey
 from gameframework.db.models.play import VaultEntry
 from gameframework.db.models.runs import RunStatus
-from gameframework.services.vault import VaultUnavailableError, read_vault_value, store_vault_value
+from gameframework.services.vault import (
+    VaultCrypto,
+    VaultUnavailableError,
+    read_vault_value,
+    store_vault_value,
+)
 
 from ..conftest import (
     make_challenge,
@@ -119,6 +124,30 @@ def test_wrong_length_key_raises_validation_error_at_settings_construction() -> 
 
     with pytest.raises(ValidationError):
         _settings(vault_key=f"1:{base64.b64encode(key).decode()}")
+
+
+def test_vault_crypto_itself_rejects_a_16_or_24_byte_key_even_if_settings_did_not() -> None:
+    """M2 security gate Task 20, finding: Low. The test above shows
+    `Settings`' own validator is what stops a wrong-length key from ever
+    reaching production code today — but that validator runs only at
+    `Settings` construction, and `VaultCrypto`'s own docstring states
+    "AES-256-GCM" as a fixed fact without enforcing it itself.
+    `cryptography`'s `AESGCM` constructor accepts any of the three
+    standard AES key sizes (16/24/32 bytes) and would silently encrypt
+    under a weaker cipher for a 16- or 24-byte key rather than raising.
+    Reached here via `model_copy()`, which — unlike the constructor — does
+    not re-run field validators, the same way a future caller handed an
+    already-built `Settings` object with a mutated `vault_key` could reach
+    it: `VaultCrypto` must not depend on `Settings` having been the one to
+    validate it.
+    """
+    settings = _settings()
+    for wrong_length in (16, 24):
+        bad_settings = settings.model_copy(
+            update={"vault_key": VaultKey(version=1, key=os.urandom(wrong_length))}
+        )
+        with pytest.raises(ValueError, match="32"):
+            VaultCrypto(bad_settings)
 
 
 def test_malformed_grammar_raises_validation_error_at_settings_construction() -> None:

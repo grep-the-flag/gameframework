@@ -16,6 +16,7 @@ import uuid
 from typing import Any
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,9 +24,9 @@ from sqlalchemy.orm import Session
 from gameframework.api.runs import PatchRunRequest
 from gameframework.db.models.feedback import AuditLog
 from gameframework.db.models.identity import Role, User
-from gameframework.db.models.runs import EventRun
+from gameframework.db.models.runs import EventRun, RunStatus
 from gameframework.services.passwords import hash_password
-from gameframework.services.runs import PATCH_WHITELIST_FIELDS
+from gameframework.services.runs import PATCH_WHITELIST_FIELDS, FieldNotWhitelistedError, patch_run
 
 from ..conftest import (
     make_event_run,
@@ -293,3 +294,47 @@ def test_patch_of_grace_period_days_leaves_hash_unchanged_and_start_still_works(
 
     response = _start(client, run_id)
     assert response.status_code == 200, response.text
+
+
+def test_patch_run_service_itself_refuses_a_field_outside_the_whitelist(
+    db_session: Session,
+) -> None:
+    """M2 security gate Task 20, finding: Low. `patch_run()` used to trust
+    whatever `fields` dict it was handed — `for key, value in
+    fields.items(): setattr(run, key, value)`, no internal membership
+    check — with the whitelist enforced entirely by the one caller,
+    `patch_run_route`, via `PatchRunRequest`'s `extra="allow"` plus the
+    route's explicit `model_extra` check. Not reachable over HTTP today
+    (that route is correctly guarded), but the function's own docstring
+    names "the run-operational whitelist" as if it enforced it, and it is
+    the one place any future run-patching logic would naturally land.
+    Calling it directly here, bypassing the route the way a second caller
+    naturally would, must now refuse a field the whitelist never named —
+    `status`, which would otherwise bypass every state-machine guard
+    `start_run`/`pause_run`/`resume_run`/`finish_run` enforce.
+    """
+    assert "status" not in PATCH_WHITELIST_FIELDS
+    run = make_event_run(db_session, status=RunStatus.created)
+    actor = make_user(db_session)
+
+    with pytest.raises(FieldNotWhitelistedError, match="status"):
+        patch_run(db_session, run, actor.id, {"status": RunStatus.destroyed})
+
+    db_session.refresh(run)
+    assert run.status == RunStatus.created, (
+        "patch_run() must refuse the whole call before writing anything, not partially apply it"
+    )
+
+
+def test_patch_run_service_still_accepts_every_whitelisted_field(db_session: Session) -> None:
+    """The positive case bound alongside the refusal above: the new
+    internal check must not narrow what a correctly-filtered caller (the
+    route) could already do.
+    """
+    run = make_event_run(db_session, status=RunStatus.running)
+    actor = make_user(db_session)
+
+    patch_run(db_session, run, actor.id, {"theme_ref": "midnight-heist"})
+
+    db_session.refresh(run)
+    assert run.theme_ref == "midnight-heist"

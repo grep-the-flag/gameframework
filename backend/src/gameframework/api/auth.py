@@ -24,7 +24,7 @@ from gameframework.config import Settings, get_settings
 from gameframework.db.models.feedback import AuditScope
 from gameframework.db.models.identity import Role, User
 from gameframework.db.models.identity import Session as SessionModel
-from gameframework.db.models.runs import EventParticipation, EventRun, RunStatus
+from gameframework.db.models.runs import RunStatus
 from gameframework.db.session import get_session
 from gameframework.services.audit import write_audit
 from gameframework.services.blocking import (
@@ -40,6 +40,7 @@ from gameframework.services.bootstrap import (
     remove_initial_admin_credentials_if_present,
 )
 from gameframework.services.passwords import hash_password, verify_password
+from gameframework.services.runs import resolve_current_run
 from gameframework.services.sessions import (
     CSRF_TOKEN_TTL,
     PRESESSION_COOKIE_NAME,
@@ -115,35 +116,36 @@ def login(
         raise ProblemError(409, "account_deactivated")
 
     if user.role is Role.player:
-        participation = (
-            db.execute(select(EventParticipation).where(EventParticipation.user_id == user.id))
-            .scalars()
-            .first()
-        )
-        if participation is not None:
-            run = db.get(EventRun, participation.event_run_id)
-            if run is not None and run.status is RunStatus.created:
-                scheduled_start = (
-                    run.scheduled_start.isoformat() if run.scheduled_start is not None else None
-                )
-                raise ProblemError(
-                    409, "run_not_started", extensions={"scheduled_start": scheduled_start}
-                )
+        # api-surface.md §2.6 "Current run, resolved": the run that decides
+        # this refusal is the tiered current-run resolution — a readable
+        # run (running/paused/finished) always outranks a created one, so
+        # a fresh roster import must not sever a participant's access to a
+        # run they are still reading or rating. An arbitrary participation
+        # lookup here would answer this refusal from whichever run a
+        # query happened to return first.
+        run = resolve_current_run(db, user)
+        if run is not None and run.status is RunStatus.created:
+            scheduled_start = (
+                run.scheduled_start.isoformat() if run.scheduled_start is not None else None
+            )
+            raise ProblemError(
+                409, "run_not_started", extensions={"scheduled_start": scheduled_start}
+            )
 
-            # A not-yet-activated player is refused outright while no OTP
-            # is outstanding — but only a player: a captain's own first
-            # login carries the same must_change_password and needs no
-            # OTP at all (ADR-0007 "Why captains need no OTP"), so this
-            # gate applies only once resolve_captaincy rules that out.
-            if user.must_change_password and resolve_captaincy(db, user) is None:
-                otp_outstanding = (
-                    user.otp_hash is not None
-                    and user.otp_consumed_at is None
-                    and user.otp_expires_at is not None
-                    and user.otp_expires_at > datetime.now(UTC)
-                )
-                if not otp_outstanding:
-                    raise ProblemError(409, "activation_required")
+        # A not-yet-activated player is refused outright while no OTP
+        # is outstanding — but only a player: a captain's own first
+        # login carries the same must_change_password and needs no
+        # OTP at all (ADR-0007 "Why captains need no OTP"), so this
+        # gate applies only once resolve_captaincy rules that out.
+        if user.must_change_password and resolve_captaincy(db, user) is None:
+            otp_outstanding = (
+                user.otp_hash is not None
+                and user.otp_consumed_at is None
+                and user.otp_expires_at is not None
+                and user.otp_expires_at > datetime.now(UTC)
+            )
+            if not otp_outstanding:
+                raise ProblemError(409, "activation_required")
 
     if not verify_password(body.password, user.password_hash):
         register_failure(db, source, settings.block_window_minutes)

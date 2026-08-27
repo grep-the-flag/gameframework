@@ -57,15 +57,30 @@ def issue_otp_route(
     if target is None or target.role is not Role.player:
         not_found("object_not_found")
 
-    target_participation = (
-        db.execute(select(EventParticipation).where(EventParticipation.user_id == target.id))
-        .scalars()
-        .first()
-    )
+    if captains_team is not None:
+        # api-surface.md §2.17 "players of own team": scoped to the
+        # captain's own team directly. A target who also holds a
+        # participation in another run must not have that other
+        # participation's row decide this refusal — an unscoped lookup
+        # picking whichever participation the query returns first would
+        # let it.
+        target_participation = (
+            db.execute(
+                select(EventParticipation).where(
+                    EventParticipation.user_id == target.id,
+                    EventParticipation.team_id == captains_team.id,
+                )
+            )
+            .scalars()
+            .first()
+        )
+    else:
+        target_participation = (
+            db.execute(select(EventParticipation).where(EventParticipation.user_id == target.id))
+            .scalars()
+            .first()
+        )
     if target_participation is None:
-        not_found("object_not_found")
-
-    if captains_team is not None and target_participation.team_id != captains_team.id:
         not_found("object_not_found")
 
     run = db.get(EventRun, target_participation.event_run_id)

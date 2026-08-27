@@ -758,3 +758,102 @@ def test_a_malformed_targz_is_refused_as_content_type_unexpected() -> None:
             "https://origin.example/event.tar.gz", caps=DEFAULT_CAPS, transport=transport
         )
     assert exc.value.code == "content_type_unexpected"
+
+
+def test_an_nfkc_invalid_url_authority_is_refused_as_source_unreachable() -> None:
+    """M2 security gate Task 20, finding: Low. `_origin_host` calls
+    `urlsplit(url).hostname` with no guard around it; `urlsplit` runs an
+    NFKC-normalization validity check on the authority component and
+    raises a bare `ValueError` for some inputs — a fullwidth `@` (U+FF20)
+    among them, exactly the kind of character a copy-pasted or visually
+    spoofed URL can carry. That `ValueError` used to propagate unguarded
+    out of `fetch_hardened`, past the one `except FetchError` the calling
+    route wraps around it, surfacing as an unhandled `500` on an admin's
+    own malformed input instead of one of the nine api-surface.md §2.6
+    codes the module's own docstring promises. `source_unreachable` is
+    the same code `_origin_host` already answers for a URL with no
+    hostname at all — this is the same class of "cannot even identify
+    what to connect to" failure, not a new one.
+    """
+    transport = httpx.MockTransport(
+        lambda request: (_ for _ in ()).throw(
+            AssertionError(f"fetch_hardened should never reach the network for {request.url}")
+        )
+    )
+    bad_url = "https://origin.example＠evil.com/event.yaml"  # fullwidth '@'
+
+    with pytest.raises(FetchError) as exc:
+        fetch_hardened(bad_url, caps=DEFAULT_CAPS, transport=transport)
+
+    assert exc.value.code == "source_unreachable"
+
+
+def _zip_with_local_header_name_mismatch() -> bytes:
+    """A well-formed single-entry zip named `event.yaml`, with the LOCAL
+    file header's filename bytes patched in place (same length, so no
+    offset in the archive shifts) to disagree with the CENTRAL
+    DIRECTORY's copy of the same name. `zipfile.ZipFile(...)` and
+    `.infolist()` parse this without complaint — the mismatch is only
+    detected when something calls `.open()` on that specific entry.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("event.yaml", b"id: demo-heist\n")
+    raw = bytearray(buf.getvalue())
+    local_header_offset = raw.find(b"event.yaml")
+    assert local_header_offset != -1
+    raw[local_header_offset : local_header_offset + len(b"event.yaml")] = b"aaaaaaaaaa"
+    return bytes(raw)
+
+
+def test_a_local_central_header_name_mismatch_is_refused_as_content_type_unexpected() -> None:
+    """M2 security gate Task 20, finding: Low. `_extract_from_zip`'s
+    `try/except zipfile.BadZipFile` covered only `ZipFile(...)` and
+    `.infolist()` — the entry loop's `archive.open(info)` call, where a
+    local/central header disagreement is actually detected, sat outside
+    that block entirely, so this specific corruption raised an unhandled
+    `zipfile.BadZipFile` instead of the same `content_type_unexpected`
+    `test_a_malformed_zip_is_refused_as_content_type_unexpected` already
+    gets for a different kind of malformed zip.
+    """
+    payload = _zip_with_local_header_name_mismatch()
+    transport = _transport(
+        {"https://origin.example/event.zip": _ok(payload, content_type="application/octet-stream")}
+    )
+
+    with pytest.raises(FetchError) as exc:
+        fetch_hardened("https://origin.example/event.zip", caps=DEFAULT_CAPS, transport=transport)
+
+    assert exc.value.code == "content_type_unexpected"
+
+
+def test_extracts_the_physically_first_event_yaml_when_two_share_a_basename() -> None:
+    """M2 security gate Task 20, finding: Low. `_extract_from_zip` used to
+    iterate `sorted(infos, key=lambda i: i.filename)` — lexicographic
+    full-path order, not the archive's own physical/central-directory
+    order, which is what a human listing the archive with a standard
+    tool sees. An archive with two `event.yaml`-named entries at
+    different paths therefore let the *lexicographically* first one win
+    silently, even when it was physically the second entry in the
+    archive. `_extract_from_targz` never had this bug — it walks a true
+    tar stream in physical order — so this brings the zip path in line
+    with it: the archive's own physical order decides, matching what a
+    listing shows first.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("z/event.yaml", b"id: physically-first-entry\n")
+        zf.writestr("a/event.yaml", b"id: physically-second-entry\n")
+    payload = buf.getvalue()
+
+    physical_order = [info.filename for info in zipfile.ZipFile(io.BytesIO(payload)).infolist()]
+    assert physical_order == ["z/event.yaml", "a/event.yaml"]
+
+    transport = _transport(
+        {"https://origin.example/event.zip": _ok(payload, content_type="application/octet-stream")}
+    )
+    result = fetch_hardened(
+        "https://origin.example/event.zip", caps=DEFAULT_CAPS, transport=transport
+    )
+
+    assert result == b"id: physically-first-entry\n"

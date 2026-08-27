@@ -109,7 +109,19 @@ _RATIO_CHECK_FLOOR = 65536
 
 
 def _origin_host(url: str) -> str:
-    parsed = urlsplit(url)
+    # M2 security gate Task 20, finding: Low. `urlsplit` runs an NFKC-
+    # normalization validity check on the authority component and raises
+    # a bare `ValueError` for some inputs (a fullwidth `@` among them) --
+    # reachable purely from the URL string, before any network request.
+    # Left unguarded, this propagated past the module's own contract
+    # ("raises FetchError naming the api-surface.md §2.6 code on any
+    # refusal") as an unhandled exception. `source_unreachable` is the
+    # same code used two lines below for a URL with no hostname at all --
+    # both are "cannot identify what to connect to."
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise FetchError("source_unreachable") from exc
     if parsed.scheme != "https":
         raise FetchError("source_not_https")
     if not parsed.hostname:
@@ -236,7 +248,13 @@ def _extract_from_zip(payload: bytes, caps: FetchCaps) -> bytes:
 
     total_decompressed = 0
     found: bytes | None = None
-    for info in sorted(infos, key=lambda i: i.filename):
+    # M2 security gate Task 20, finding: Low. Physical/central-directory
+    # order, not `sorted()` by filename — `_extract_from_targz` already
+    # walks its own archive format in true stream order, and picking the
+    # *lexicographically* first `event.yaml` among several same-basename
+    # entries silently diverged from what a standard tool's listing shows
+    # first. The two archive formats now agree.
+    for info in infos:
         if _zip_entry_is_symlink(info):
             raise FetchError("archive_entry_unsafe")
         normalized = _normalized_safe_path(info.filename)
@@ -246,7 +264,17 @@ def _extract_from_zip(payload: bytes, caps: FetchCaps) -> bytes:
 
         entry_decompressed = 0
         target_chunks: list[bytes] = []
-        with archive.open(info) as member:
+        # M2 security gate Task 20, finding: Low. A crafted zip whose
+        # local file header disagrees with its central directory entry
+        # (same name, patched bytes) parses cleanly through `ZipFile()`/
+        # `.infolist()` above — `zipfile` only detects the mismatch here,
+        # at `.open()` time, which the outer `try/except BadZipFile` does
+        # not cover.
+        try:
+            member_context = archive.open(info)
+        except zipfile.BadZipFile as exc:
+            raise FetchError("content_type_unexpected") from exc
+        with member_context as member:
             while True:
                 chunk = member.read(_CHUNK_SIZE)
                 if not chunk:

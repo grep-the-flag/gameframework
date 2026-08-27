@@ -41,6 +41,18 @@ _REPLAY_STATES = (TeamChallengeState.provisioning, TeamChallengeState.active)
 _CANDIDATE_STATES = (TeamChallengeState.locked, TeamChallengeState.startable)
 
 
+class NoParticipationError(Exception):
+    """The caller holds no `event_participation` in `run` at all — staff
+    never do (data-model.md §6), and the route's role gate is what is
+    meant to keep them from reaching here. Raised instead of letting
+    `.scalar_one()` crash with an unhandled `NoResultFound`, so a future
+    regression that widens `POST /challenges/{id}/start`'s role check
+    degrades to a clean `403 role_denied` rather than an unhandled `500` —
+    the same shape `deps._ensure_own_team_or_staff` and `api/security.py`'s
+    OTP handler already give a `Role.player` caller who holds no captaincy
+    (M2-Task-Plan.md Task 18)."""
+
+
 class RunNotRunningError(Exception):
     """api-surface.md §2.7 refusal 1: the lifecycle gate — legal only
     while the run is `running`. `created`, `paused` and `finished` all
@@ -136,7 +148,12 @@ def start_challenge(db: Session, run: EventRun, user: User, challenge: Challenge
             EventParticipation.user_id == user.id,
             EventParticipation.event_run_id == run.id,
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if participation is None:
+        # Staff hold no participation in any run (data-model.md §6); the
+        # route's role gate is the intended defense, this is the backstop
+        # for it (M2-Task-Plan.md Task 18 — see NoParticipationError).
+        raise NoParticipationError()
     # data-model.md §6: team composition is frozen from `start`, and no
     # participation reaches a started run without a team — so a
     # participant whose current run is `running` (guaranteed by the check

@@ -9,12 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from gameframework.api.deps import current_session
-from gameframework.api.errors import ProblemError, idempotency_key, not_found
+from gameframework.api.errors import ProblemError, forbidden, idempotency_key, not_found
 from gameframework.db.models.authoring import Challenge
 from gameframework.db.models.identity import Role
 from gameframework.db.session import get_session
 from gameframework.services.challenges import (
     ChallengeNotOfferedError,
+    NoParticipationError,
     RunNotRunningError,
     TeamOccupiedError,
     start_challenge,
@@ -113,6 +114,12 @@ def start_challenge_route(
 
     try:
         row = start_challenge(db, run, auth.user, challenge)
+    except NoParticipationError:
+        # Backstop for the role gate above (`Role.player` only): a caller
+        # reaching this point with no participation at all is not a role
+        # this route may serve, whatever `current_session` let through
+        # (M2-Task-Plan.md Task 18).
+        forbidden("role_denied")
     except RunNotRunningError as exc:
         raise ProblemError(
             409, "run_not_running", extensions={"run_status": run.status.value}

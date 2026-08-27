@@ -4,6 +4,7 @@ argon2-cffi. One hasher, one algorithm, for both `password_hash` and
 """
 
 import logging
+import secrets
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -14,6 +15,21 @@ _logger = logging.getLogger(__name__)
 
 def hash_password(plain: str) -> str:
     return _hasher.hash(plain)
+
+
+DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+"""M2 security gate Task 20, finding: Medium. `POST /auth/login` used to
+answer an unknown username immediately, before `verify_password` ever
+ran, while a known username with a wrong password paid a full Argon2id
+verification a few lines later — both answer the byte-identical `401
+invalid_credentials`, so latency alone told the two apart, an oracle
+ADR-0007's accepted login oracle never names (its four categories are
+distinguished by response content, never by timing). Verifying against
+this fixed hash — drawn once from a CSPRNG, matching nothing any real
+account could hold — on the unknown-username path pays the same cost the
+known-username path already pays, closing the gap; the result is always
+discarded, since the answer there is unconditionally "unknown account."
+"""
 
 
 def verify_password(plain: str, hashed: str) -> bool:

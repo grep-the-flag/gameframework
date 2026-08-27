@@ -39,7 +39,7 @@ from gameframework.services.bootstrap import (
     INITIAL_ADMIN_USERNAME,
     remove_initial_admin_credentials_if_present,
 )
-from gameframework.services.passwords import hash_password, verify_password
+from gameframework.services.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from gameframework.services.runs import resolve_current_run
 from gameframework.services.sessions import (
     CSRF_TOKEN_TTL,
@@ -96,6 +96,16 @@ def login(
         select(User).where(User.username == normalize_username(body.username))
     ).scalar_one_or_none()
     if user is None:
+        # M2 security gate Task 20 (finding: Medium): pay the same Argon2id
+        # cost a known username's wrong-password path pays a few lines
+        # below, against a fixed dummy hash nothing derives from real
+        # data — the result is discarded, since the answer is
+        # unconditionally "unknown account." Without this, response
+        # latency alone told a real staff username apart from a
+        # nonexistent one, both answering the byte-identical 401
+        # invalid_credentials — an oracle ADR-0007's accepted login
+        # oracle never names.
+        verify_password(body.password, DUMMY_PASSWORD_HASH)
         register_failure(db, source, settings.block_window_minutes)
         raise ProblemError(401, "invalid_credentials")
 

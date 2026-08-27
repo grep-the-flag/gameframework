@@ -22,6 +22,7 @@ from gameframework.db.models.runs import EventParticipation, EventRun
 from gameframework.db.session import get_session
 from gameframework.services.audit import write_audit
 from gameframework.services.otp import issue_otp
+from gameframework.services.runs import resolve_current_run
 from gameframework.services.sessions import AuthContext
 
 router = APIRouter(tags=["security"])
@@ -74,16 +75,16 @@ def issue_otp_route(
             .scalars()
             .first()
         )
+        if target_participation is None:
+            not_found("object_not_found")
+        run = db.get(EventRun, target_participation.event_run_id)
     else:
-        target_participation = (
-            db.execute(select(EventParticipation).where(EventParticipation.user_id == target.id))
-            .scalars()
-            .first()
-        )
-    if target_participation is None:
-        not_found("object_not_found")
-
-    run = db.get(EventRun, target_participation.event_run_id)
+        # api-surface.md §2.17 "any" scope: resolves the same tiered
+        # current-run §2.6 already defines for everyone else who reads
+        # it — a target holding participations in more than one run must
+        # not have this route decide, on its own, whichever one an
+        # unordered query returns first.
+        run = resolve_current_run(db, target)
     if run is None:
         not_found("object_not_found")
 

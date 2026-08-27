@@ -62,9 +62,11 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gameframework.config import get_settings
+from gameframework.db.models.feedback import AuditLog
 from gameframework.db.models.identity import Role, User
 from gameframework.db.models.identity import Session as SessionModel
 from gameframework.db.models.runs import EventRun, RunStatus
@@ -485,3 +487,53 @@ def test_captain_refused_issuing_otp_for_other_teams_player(
 
     assert response.status_code == 404
     assert response.json()["code"] == "object_not_found"
+
+
+def test_admin_issuing_otp_resolves_the_targets_current_run(
+    client: TestClient, db_session: Session
+) -> None:
+    """api-surface.md §2.6, §2.17: staff issuing an OTP for a target
+    ("any" scope) must resolve the same tiered "current run" §2.6 already
+    defines for everyone else who reads it — not answer from whichever of
+    the target's participations an unordered query returns first. Proven
+    against the `otp_issued` audit row's `event_run_id`, which names the
+    run the route actually used: `issue_otp` never gates on run status, so
+    a status-code-only assertion would read `200` identically against
+    either run and would not catch a route resolving the wrong one.
+
+    The `created` run's participation is written *before* the readable
+    one's so that insertion order and §2.6 precedence disagree — ordered
+    the other way, a query that never calls the resolver at all can still
+    pass by coincidence. That was Task 19's own finding (its first draft
+    of the cross-role E2E passed five runs out of five against the
+    equivalent bug in `POST /auth/login`, for exactly this reason), now a
+    Working Agreement standard for any claim about precedence, ranking or
+    selection: the fixture must make the wrong answer and the right answer
+    different rows.
+    """
+    created_run = make_event_run(db_session, status=RunStatus.created)
+    readable_run = make_event_run(db_session, status=RunStatus.running)
+    admin = make_user(
+        db_session,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password("Admin-Passw0rd!"),
+    )
+    _authenticate(client, db_session, admin)
+    target = make_user(
+        db_session,
+        role=Role.player,
+        must_change_password=True,
+        password_hash=hash_password("multi-run-target"),
+    )
+    make_participation(db_session, user=target, run=created_run)
+    make_participation(db_session, user=target, run=readable_run)
+
+    response = client.post("/api/v1/auth/otp", json={"user_id": str(target.id)})
+
+    assert response.status_code == 200, response.text
+    entry = db_session.execute(select(AuditLog).where(AuditLog.action == "otp_issued")).scalar_one()
+    assert entry.event_run_id == readable_run.id, (
+        f"expected the OTP resolved against the readable run {readable_run.id}, "
+        f"got {entry.event_run_id}"
+    )

@@ -4,9 +4,33 @@ data-model.md §3.3). The five-failure block only — the separate per-source
 token-bucket throttle (api-surface.md §1) that Task 2 shipped as
 `too_many_requests`'s default `code`, `rate_limited`, is not this module's
 concern and nothing here touches it.
+
+M2 security gate (Task 20) revision: `trusted_proxies` no longer describes
+a chain depth to walk. It names the address(es) the *single* direct proxy
+in front of this backend may present as — a set because an HA pair is two
+legitimate peer identities, never because there is more than one hop. The
+prior algorithm walked `X-Forwarded-For` from the right, skipping every
+entry that matched *some* trusted CIDR, however many there were, and took
+the first non-matching entry as the client. That is unsound the moment any
+trusted address is not itself the entity that appended the value next to
+it — an L4 relay sitting in front of an HTTP-aware reverse proxy is
+trusted (its address may legitimately be the socket peer) but never
+touches the header, so whatever a client puts to the left of the proxy's
+own append passes through unexamined, indistinguishable in shape from a
+value a further, genuine hop would have appended. No walk depth or entry
+count can tell the two apart from the header's content alone — both
+scenarios produce byte-identical headers. The fix drops the capability
+rather than carry a rule that cannot make the distinction: only the
+peer's own rightmost append is ever consulted, never anything to its
+left, so a forged value is unreachable by construction. Multi-hop
+resolution is deliberately not supported (ADR-0007) — `warn_if_multi_hop_
+configured` below is what tells an operator who configures more than one
+`trusted_proxies` entry that every source now resolves through the one
+peer, degrading the per-source throttle to an installation-wide one.
 """
 
 import ipaddress
+import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Request
@@ -17,6 +41,7 @@ from gameframework.config import Settings
 from gameframework.db.models.identity import BlockedAddress
 
 _FAILURE_THRESHOLD = 5
+_logger = logging.getLogger(__name__)
 
 
 def normalize_source(addr: str) -> str:
@@ -24,26 +49,59 @@ def normalize_source(addr: str) -> str:
     IPv4 source as its `/32`, an IPv6 source as its `/64` (data-model.md
     §3.3): a single IPv6 address is not a source on its own, because SLAAC
     hands one host an entire `/64` and `ip addr add` hands it the rest.
+
+    An IPv4-mapped IPv6 literal (`::ffff:a.b.c.d`) parses as an
+    `IPv6Address` but names an IPv4 host exactly as `a.b.c.d` does — the
+    mapped payload sits in the address's *last* 32 bits, all of which a
+    `/64` truncation discards, collapsing every such address to the
+    identical key regardless of which real host it names. Unwrapping it
+    first is what keeps two spellings of one host normalizing to the same
+    prefix, and two different mapped hosts normalizing to two different
+    ones.
     """
     parsed = ipaddress.ip_address(addr)
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
     prefix = 32 if parsed.version == 4 else 64
-    return str(ipaddress.ip_network(f"{addr}/{prefix}", strict=False))
+    return str(ipaddress.ip_network(f"{parsed}/{prefix}", strict=False))
 
 
 _NO_PEER_SENTINEL = "0.0.0.0"
 
 
+def warn_if_multi_hop_configured(settings: Settings) -> None:
+    """Called once at boot (`main.py`'s `create_app()`). More than one
+    `trusted_proxies` entry no longer means "a chain this many hops deep"
+    — it means an HA pair, all still resolving through the same single
+    append. An operator who genuinely runs a proxy chain gets every
+    client collapsed onto its inner hop silently unless this says so at
+    startup, not mid-event.
+    """
+    if len(settings.trusted_proxies) > 1:
+        _logger.warning(
+            "trusted_proxies configures %d addresses (%s); only the direct "
+            "socket peer's own X-Forwarded-For append is honoured -- "
+            "multi-hop client-address resolution is not supported "
+            "(ADR-0007). Every source now resolves through this one peer, "
+            "which degrades the per-source auth throttle to an "
+            "installation-wide one.",
+            len(settings.trusted_proxies),
+            ", ".join(settings.trusted_proxies),
+        )
+
+
 def resolve_client_address(request: Request, settings: Settings) -> str:
-    """ADR-0007 rules 1-2. The socket peer decides whether any forwarding
-    header is read at all — with no `trusted_proxies` configured (the
-    default) or a peer outside that set, every header is ignored and the
-    peer itself is the source, fail-closed. Where the peer is trusted,
-    `X-Forwarded-For` is walked from the rightmost entry, skipping every
-    one that is itself a trusted proxy; the first that is not is the
-    client, and everything to its left arrived from outside the trusted
-    chain and is never read — a client prepending its own entries only
-    adds values the walk stops before reaching. If every entry is a
-    trusted proxy, or the header is absent, the source is the peer.
+    """`trusted_proxies` names the addresses the single direct proxy in
+    front of this backend may present as (ADR-0007) — never a chain to
+    walk. If the socket peer itself is not one of them, `X-Forwarded-For`
+    is an unverified claim from whoever sent the request and is ignored
+    outright; the socket peer is the source, fail-closed. If the peer is
+    trusted, exactly its own rightmost append is consulted — the one
+    entry any hop this installation trusts actually wrote — and nothing
+    further left, however many entries follow: an attacker can pad
+    arbitrary content there, but this function never looks at it, so a
+    forged value is unreachable by construction rather than by a rule
+    that has to out-argue it (module docstring).
 
     `request.client` is `None` only for an ASGI transport that never
     populates the scope's `client` key — unreachable for a real TCP
@@ -54,10 +112,11 @@ def resolve_client_address(request: Request, settings: Settings) -> str:
     real client is ever seen as this address) that ADR-0007's own
     principle asks for: "never no source at all... a request whose client
     address cannot be established still has to be counted against
-    something." An operator would see failures accumulating against
-    `0.0.0.0/32` on `GET /security/blocked-addresses` as a clear signal
-    that something is wrong with how requests reach the backend, rather
-    than a silent 500.
+    something." The same reasoning covers the trusted peer's own append:
+    if it does not parse as an address at all, it is a malformed proxy,
+    not a client — falling back to the peer keeps a garbled header from
+    reaching `normalize_source` unguarded the same way a missing peer
+    would.
     """
     peer = request.client.host if request.client is not None else _NO_PEER_SENTINEL
     trusted_networks = [ipaddress.ip_network(cidr) for cidr in settings.trusted_proxies]
@@ -73,12 +132,15 @@ def resolve_client_address(request: Request, settings: Settings) -> str:
         return peer
 
     forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        entries = [entry.strip() for entry in forwarded_for.split(",")]
-        for entry in reversed(entries):
-            if not is_trusted(entry):
-                return entry
-    return peer
+    if not forwarded_for:
+        return peer
+
+    rightmost = forwarded_for.rsplit(",", 1)[-1].strip()
+    try:
+        ipaddress.ip_address(rightmost)
+    except ValueError:
+        return peer
+    return rightmost
 
 
 def check_blocked(db: DbSession, source: str) -> BlockedAddress | None:

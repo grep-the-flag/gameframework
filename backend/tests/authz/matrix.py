@@ -11,19 +11,26 @@ scope and no lifecycle gate. What governs them is the session's
 test against the wrong rule (ADR-0007, data-model.md §3.2). Do not add
 them, however tempting the "every auth route needs a row" instinct is.
 
-**Completeness is an assertion, not an assumption.** Every §2.17 table
-line (378-398 — 376-377 are the header and separator) must be cited by
-at least one row's `line`, checked at import time against
-`EXPECTED_SECTION_217_LINES` below. A route added to §2.17 without a row
-here fails collection, the same standard Task 16's append-only surface
-test used: the absence of something is bound by pinning the complete
-set, never by trusting that nothing was forgotten. A row need not
-*parametrize* to count: `generatable=False` rows (currently one —
-`definitions_import`) still cite their line and still satisfy the
-assertion, with `not_generatable_reason` stating why this generator
-cannot drive it and `covered_by` naming the suite that does. That is the
-difference between a line silently missing and a line present with a
-documented reason it generates nothing.
+**Completeness is an assertion, not an assumption — anchored on text,
+not position.** Every §2.17 table row's **Action cell**, verbatim, must
+be cited by at least one row's `action_cell`, checked at import time
+against `EXPECTED_SECTION_217_ROWS` below. A route added to §2.17
+without a row here fails collection, the same standard Task 16's
+append-only surface test used: the absence of something is bound by
+pinning the complete set, never by trusting that nothing was forgotten.
+The anchor is the cell's own text rather than its line number
+deliberately: a line number is an accident of the file — an edit
+anywhere above §2.17 (§2.6 gained a sentence in this same round of
+review) shifts every line below it, and a completeness check keyed on
+position would then fail for a reason that has nothing to do with
+completeness. `line` survives only as a navigation comment on each row,
+never compared. A row need not *parametrize* to count: `generatable=
+False` rows (currently one — `definitions_import`) still cite their
+Action cell and still satisfy the assertion, with `not_generatable_
+reason` stating why this generator cannot drive it and `covered_by`
+naming the suite that does. That is the difference between a row
+silently missing and a row present with a documented reason it
+generates nothing.
 
 **The four prose-lifecycle groups §2.17 did not determine on its own
 were reported before being encoded, and are resolved now** (Step 1
@@ -77,11 +84,38 @@ from gameframework.db.models.authoring import DefinitionStatus
 from gameframework.db.models.identity import Role
 from gameframework.db.models.runs import RunStatus
 
-# api-surface.md §2.17's table body — lines 378 through 398 inclusive
-# (376-377 are the header and separator row). `MATRIX`'s own completeness
-# assertion, at the bottom of this file, checks every row's `line`
-# against this set.
-EXPECTED_SECTION_217_LINES = frozenset(range(378, 399))
+# api-surface.md §2.17's table body, Action column, verbatim — one entry
+# per table row (378-398; 376-377 are the header and separator). Text,
+# not line numbers: a line number shifts when anything above §2.17
+# changes, which has nothing to do with whether this file is complete.
+# `MATRIX`'s own completeness assertion, at the bottom of this file,
+# checks every row's `action_cell` against this set.
+EXPECTED_SECTION_217_ROWS = frozenset(
+    {
+        "`PATCH /teams/{id}` (rename)",
+        "`POST /runs/{id}/teams`, `PUT /teams/{id}/members`, "
+        "`POST /runs/{id}/users/import`, `POST /runs/{id}/users`",
+        "`PUT /teams/{id}/captain`",
+        "`POST /auth/otp`",
+        "`PUT /me/language`",
+        "`GET/POST /tickets`, `GET/POST /tickets/{id}/messages`",
+        "`GET /chat/messages`, chat over `/ws`",
+        "`GET /gamemaster/threads/{challenge_id}` + messages",
+        "`GET /me/team/rewards` (§2.7)",
+        "`POST /challenges/{id}/start`",
+        "`POST /challenges/{id}/flag`",
+        "`POST /ratings` (§2.13)",
+        "`GET /users/{id}/export`, `DELETE /users/{id}`",
+        "`GET /security/blocked-addresses`, `DELETE /security/blocked-addresses/{id}`",
+        "Force-solve / cancel / score adjustments (§2.7, §2.12)",
+        "Port and resources overrides (§2.8)",
+        "Run preflight (§2.6)",
+        "Definition authoring (§2.6)",
+        "Run lifecycle, keep, legal hold, destroy (§2.6)",
+        "`PATCH /runs/{id}` (run-operational whitelist, §2.6)",
+        "`GET /leaderboard`, `GET /event`, `GET /challenges*`",
+    }
+)
 
 
 class ObjectScope(Enum):
@@ -154,14 +188,18 @@ class MatrixRow:
 
     name: str
     citation: str
+    action_cell: str
+    """The §2.17 table row's Action-column text, verbatim — the anchor
+    the completeness assertion below actually checks. Several routes
+    share one bundled Action cell (e.g. the four `379` rows, the twelve
+    `395` rows); the assertion is over the *set* of cells cited, not a
+    count, precisely so a bundle expanded into many rows still reduces
+    to one cell."""
     line: int
-    """The §2.17 table line (378-398) this row's action derives from —
-    the machine-checked half of `citation`, which stays free-text prose
-    for the §2.6 sub-references and rulings a bare int cannot carry.
-    Several routes share one bundled §2.17 line (e.g. 379, 395, 396,
-    398); the completeness assertion is over the *set* of lines cited,
-    not a count, precisely so a bundle expanded into many rows still
-    reduces to one line."""
+    """The §2.17 table line (378-398) this row's action currently sits
+    at — navigation only, never asserted on: a line number is an
+    accident of the file and shifts whenever anything above §2.17
+    changes (`action_cell` is what survives that)."""
     route: Route
     roles: tuple[Role, ...]
     scope: ObjectScope
@@ -215,6 +253,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="teams_rename",
         citation="api-surface.md §2.17 line 378",
+        action_cell="`PATCH /teams/{id}` (rename)",
         line=378,
         route=Route("PATCH", lambda ctx: (f"/teams/{ctx.team_id}", {"name": "Renamed"})),
         roles=(Role.player, Role.admin, Role.gameadmin),
@@ -228,6 +267,10 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="teams_create",
         citation="api-surface.md §2.17 line 379",
+        action_cell=(
+            "`POST /runs/{id}/teams`, `PUT /teams/{id}/members`, "
+            "`POST /runs/{id}/users/import`, `POST /runs/{id}/users`"
+        ),
         line=379,
         route=Route(
             "POST",
@@ -249,6 +292,10 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="teams_set_members",
         citation="api-surface.md §2.17 line 379",
+        action_cell=(
+            "`POST /runs/{id}/teams`, `PUT /teams/{id}/members`, "
+            "`POST /runs/{id}/users/import`, `POST /runs/{id}/users`"
+        ),
         line=379,
         route=Route(
             "PUT",
@@ -266,6 +313,10 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="participants_import",
         citation="api-surface.md §2.17 line 379",
+        action_cell=(
+            "`POST /runs/{id}/teams`, `PUT /teams/{id}/members`, "
+            "`POST /runs/{id}/users/import`, `POST /runs/{id}/users`"
+        ),
         line=379,
         route=Route(
             "POST",
@@ -283,6 +334,10 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="participants_create_one",
         citation="api-surface.md §2.17 line 379",
+        action_cell=(
+            "`POST /runs/{id}/teams`, `PUT /teams/{id}/members`, "
+            "`POST /runs/{id}/users/import`, `POST /runs/{id}/users`"
+        ),
         line=379,
         route=Route(
             "POST",
@@ -300,6 +355,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="teams_set_captain",
         citation="api-surface.md §2.17 line 380",
+        action_cell="`PUT /teams/{id}/captain`",
         line=380,
         route=Route(
             "PUT",
@@ -316,6 +372,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="auth_otp_issue",
         citation="api-surface.md §2.17 line 381",
+        action_cell="`POST /auth/otp`",
         line=381,
         route=Route("POST", lambda ctx: ("/auth/otp", {"user_id": str(ctx.user_id)})),
         roles=(Role.player, Role.admin, Role.gameadmin),
@@ -327,6 +384,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="me_language",
         citation="api-surface.md §2.17 line 382",
+        action_cell="`PUT /me/language`",
         line=382,
         route=Route("PUT", lambda ctx: ("/me/language", {"preferred_language": "de"})),
         roles=(Role.player, Role.admin, Role.gameadmin),
@@ -338,6 +396,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="challenges_start",
         citation="api-surface.md §2.17 line 387",
+        action_cell="`POST /challenges/{id}/start`",
         line=387,
         route=Route("POST", lambda ctx: (f"/challenges/{ctx.challenge_id}/start", None)),
         roles=(Role.player,),
@@ -355,6 +414,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="users_export",
         citation="api-surface.md §2.17 line 390",
+        action_cell="`GET /users/{id}/export`, `DELETE /users/{id}`",
         line=390,
         route=Route("GET", lambda ctx: (f"/users/{ctx.user_id}/export", None)),
         roles=(Role.admin,),
@@ -366,6 +426,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="users_erase",
         citation="api-surface.md §2.17 line 390",
+        action_cell="`GET /users/{id}/export`, `DELETE /users/{id}`",
         line=390,
         route=Route("DELETE", lambda ctx: (f"/users/{ctx.user_id}", None)),
         roles=(Role.admin,),
@@ -377,6 +438,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="security_blocked_addresses_list",
         citation="api-surface.md §2.17 line 391",
+        action_cell="`GET /security/blocked-addresses`, `DELETE /security/blocked-addresses/{id}`",
         line=391,
         route=Route("GET", lambda ctx: ("/security/blocked-addresses", None)),
         roles=(Role.admin, Role.gameadmin),
@@ -390,6 +452,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="security_blocked_addresses_release",
         citation="api-surface.md §2.17 line 391",
+        action_cell="`GET /security/blocked-addresses`, `DELETE /security/blocked-addresses/{id}`",
         line=391,
         route=Route("DELETE", lambda ctx: (f"/security/blocked-addresses/{ctx.blocked_id}", None)),
         roles=(Role.admin, Role.gameadmin),
@@ -401,6 +464,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_preflight",
         citation="api-surface.md §2.17 line 394",
+        action_cell="Run preflight (§2.6)",
         line=394,
         route=Route("POST", lambda ctx: (f"/runs/{ctx.run_id}/preflight", None)),
         roles=(Role.admin,),
@@ -419,6 +483,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_list",
         citation="api-surface.md §2.6 (Definitions table)",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route("GET", lambda ctx: ("/event-definitions", None)),
         roles=(Role.admin, Role.gameadmin),
@@ -430,6 +495,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_create",
         citation="api-surface.md §2.6 (Definitions table)",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route("POST", lambda ctx: ("/event-definitions", None)),
         roles=(Role.admin,),
@@ -441,6 +507,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_read",
         citation="api-surface.md §2.6 (Definitions table)",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route("GET", lambda ctx: (f"/event-definitions/{ctx.definition_id}", None)),
         roles=(Role.admin, Role.gameadmin),
@@ -452,6 +519,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_patch",
         citation="api-surface.md §2.6 + assistant ruling, Task 18",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route(
             "PATCH", lambda ctx: (f"/event-definitions/{ctx.definition_id}", {"story": {"en": "x"}})
@@ -465,6 +533,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_publish",
         citation="api-surface.md §2.6 line 19",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route("POST", lambda ctx: (f"/event-definitions/{ctx.definition_id}/publish", None)),
         roles=(Role.admin,),
@@ -476,6 +545,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_unpublish",
         citation="api-surface.md §2.6 line 19",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route(
             "POST", lambda ctx: (f"/event-definitions/{ctx.definition_id}/unpublish", None)
@@ -489,6 +559,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_archive",
         citation="api-surface.md §2.6 line 19",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route("POST", lambda ctx: (f"/event-definitions/{ctx.definition_id}/archive", None)),
         roles=(Role.admin,),
@@ -500,6 +571,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_unarchive",
         citation="api-surface.md §2.6 line 20",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route(
             "POST", lambda ctx: (f"/event-definitions/{ctx.definition_id}/unarchive", None)
@@ -513,6 +585,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_clone",
         citation="api-surface.md §2.6 (Definitions table)",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route("POST", lambda ctx: (f"/event-definitions/{ctx.definition_id}/clone", None)),
         roles=(Role.admin,),
@@ -524,6 +597,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_dry_run",
         citation="api-surface.md §2.6 line 23",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route("POST", lambda ctx: (f"/event-definitions/{ctx.definition_id}/dry-run", None)),
         roles=(Role.admin,),
@@ -539,6 +613,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_import",
         citation="api-surface.md §2.6 (Definitions table)",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         # Never called — see `generatable` below. Shape is the real
         # `{"url": ...}` body `POST /event-definitions/import` accepts,
@@ -573,6 +648,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_start",
         citation="api-surface.md §2.6 line 32",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route("POST", lambda ctx: (f"/runs/{ctx.run_id}/transition", {"action": "start"})),
         roles=(Role.admin,),
@@ -584,6 +660,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_pause",
         citation="api-surface.md §2.6 line 32",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route("POST", lambda ctx: (f"/runs/{ctx.run_id}/transition", {"action": "pause"})),
         roles=(Role.admin, Role.gameadmin),
@@ -595,6 +672,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_resume",
         citation="api-surface.md §2.6 line 32",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route("POST", lambda ctx: (f"/runs/{ctx.run_id}/transition", {"action": "resume"})),
         roles=(Role.admin, Role.gameadmin),
@@ -606,6 +684,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_finish",
         citation="api-surface.md §2.6 line 32",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route("POST", lambda ctx: (f"/runs/{ctx.run_id}/transition", {"action": "finish"})),
         roles=(Role.admin, Role.gameadmin),
@@ -617,6 +696,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_patch",
         citation="api-surface.md §2.17 line 397",
+        action_cell="`PATCH /runs/{id}` (run-operational whitelist, §2.6)",
         line=397,
         route=Route("PATCH", lambda ctx: (f"/runs/{ctx.run_id}", {"otp_lifetime_minutes": 10})),
         roles=(Role.admin, Role.gameadmin),
@@ -638,6 +718,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="event_read",
         citation="api-surface.md §2.17 line 398 (§2.6)",
+        action_cell="`GET /leaderboard`, `GET /event`, `GET /challenges*`",
         line=398,
         route=Route("GET", lambda ctx: ("/event", None)),
         roles=(Role.admin, Role.gameadmin, Role.player),
@@ -649,6 +730,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="challenges_list",
         citation="api-surface.md §2.17 line 398 (§2.7)",
+        action_cell="`GET /leaderboard`, `GET /event`, `GET /challenges*`",
         line=398,
         route=Route("GET", lambda ctx: ("/challenges", None)),
         roles=(Role.admin, Role.gameadmin, Role.player),
@@ -660,6 +742,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="challenges_read",
         citation="api-surface.md §2.17 line 398 (§2.7)",
+        action_cell="`GET /leaderboard`, `GET /event`, `GET /challenges*`",
         line=398,
         route=Route("GET", lambda ctx: (f"/challenges/{ctx.challenge_id}", None)),
         roles=(Role.admin, Role.gameadmin, Role.player),
@@ -678,6 +761,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="rewards_read",
         citation="api-surface.md §2.17 line 386 (§2.7)",
+        action_cell="`GET /me/team/rewards` (§2.7)",
         line=386,
         route=Route("GET", lambda ctx: ("/me/team/rewards", None)),
         roles=(Role.player,),
@@ -690,6 +774,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="challenges_flag",
         citation="api-surface.md §2.17 line 388 (§2.7)",
+        action_cell="`POST /challenges/{id}/flag`",
         line=388,
         route=Route(
             "POST", lambda ctx: (f"/challenges/{ctx.challenge_id}/flag", {"flag": "placeholder"})
@@ -704,6 +789,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="tickets_list",
         citation="api-surface.md §2.17 line 383 (§2.10)",
+        action_cell="`GET/POST /tickets`, `GET/POST /tickets/{id}/messages`",
         line=383,
         route=Route("GET", lambda ctx: ("/tickets", None)),
         roles=(Role.player, Role.admin, Role.gameadmin),
@@ -716,6 +802,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="tickets_create",
         citation="api-surface.md §2.17 line 383 (§2.10)",
+        action_cell="`GET/POST /tickets`, `GET/POST /tickets/{id}/messages`",
         line=383,
         route=Route("POST", lambda ctx: ("/tickets", {"subject": "Help", "body": "..."})),
         roles=(Role.player,),
@@ -728,6 +815,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="tickets_messages_list",
         citation="api-surface.md §2.17 line 383 (§2.10)",
+        action_cell="`GET/POST /tickets`, `GET/POST /tickets/{id}/messages`",
         line=383,
         route=Route("GET", lambda ctx: (f"/tickets/{ctx.team_id}/messages", None)),
         roles=(Role.player, Role.admin, Role.gameadmin),
@@ -740,6 +828,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="tickets_messages_post",
         citation="api-surface.md §2.17 line 383 (§2.10)",
+        action_cell="`GET/POST /tickets`, `GET/POST /tickets/{id}/messages`",
         line=383,
         route=Route("POST", lambda ctx: (f"/tickets/{ctx.team_id}/messages", {"body": "reply"})),
         roles=(Role.player, Role.admin, Role.gameadmin),
@@ -752,6 +841,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="chat_messages",
         citation="api-surface.md §2.17 line 384 (§2.10)",
+        action_cell="`GET /chat/messages`, chat over `/ws`",
         line=384,
         route=Route("GET", lambda ctx: ("/chat/messages", None)),
         roles=(Role.player,),
@@ -769,6 +859,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="gamemaster_threads_read",
         citation="api-surface.md §2.17 line 385 (§2.11)",
+        action_cell="`GET /gamemaster/threads/{challenge_id}` + messages",
         line=385,
         route=Route("GET", lambda ctx: (f"/gamemaster/threads/{ctx.challenge_id}", None)),
         roles=(Role.player,),
@@ -785,6 +876,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="gamemaster_threads_send",
         citation="api-surface.md §2.17 line 385 (§2.11)",
+        action_cell="`GET /gamemaster/threads/{challenge_id}` + messages",
         line=385,
         route=Route(
             "POST",
@@ -800,6 +892,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="ratings_submit",
         citation="api-surface.md §2.17 line 389 (§2.13)",
+        action_cell="`POST /ratings` (§2.13)",
         line=389,
         route=Route("POST", lambda ctx: ("/ratings", {"minigame_id": "demo", "stars": 5})),
         roles=(Role.player,),
@@ -812,6 +905,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="challenges_force_solve",
         citation="api-surface.md §2.17 line 392 (§2.7)",
+        action_cell="Force-solve / cancel / score adjustments (§2.7, §2.12)",
         line=392,
         route=Route(
             "POST",
@@ -830,6 +924,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="challenges_cancel",
         citation="api-surface.md §2.17 line 392 (§2.7)",
+        action_cell="Force-solve / cancel / score adjustments (§2.7, §2.12)",
         line=392,
         route=Route(
             "POST",
@@ -848,6 +943,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="score_adjustments_create",
         citation="api-surface.md §2.17 line 392 (§2.12)",
+        action_cell="Force-solve / cancel / score adjustments (§2.7, §2.12)",
         line=392,
         route=Route(
             "POST",
@@ -866,6 +962,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="score_adjustments_list",
         citation="api-surface.md §2.17 line 392 (§2.12)",
+        action_cell="Force-solve / cancel / score adjustments (§2.7, §2.12)",
         line=392,
         route=Route("GET", lambda ctx: (f"/teams/{ctx.team_id}/score-adjustments", None)),
         roles=(Role.admin, Role.gameadmin),
@@ -878,6 +975,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="minigames_port_override",
         citation="api-surface.md §2.17 line 393 (§2.8)",
+        action_cell="Port and resources overrides (§2.8)",
         line=393,
         route=Route(
             "POST",
@@ -896,6 +994,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="minigames_resources_override",
         citation="api-surface.md §2.17 line 393 (§2.8)",
+        action_cell="Port and resources overrides (§2.8)",
         line=393,
         route=Route(
             "POST",
@@ -922,6 +1021,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_keep",
         citation="api-surface.md §2.17 line 396 (§2.6)",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route("POST", lambda ctx: (f"/runs/{ctx.run_id}/keep", None)),
         roles=(Role.admin,),
@@ -934,6 +1034,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_legal_hold",
         citation="api-surface.md §2.17 line 396 (§2.6)",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route(
             "POST", lambda ctx: (f"/runs/{ctx.run_id}/legal-hold", {"reason": "pending inquiry"})
@@ -948,6 +1049,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_destroy",
         citation="api-surface.md §2.17 line 396 (§2.6)",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route("POST", lambda ctx: (f"/runs/{ctx.run_id}/destroy", {"export": True})),
         roles=(Role.admin,),
@@ -960,6 +1062,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="runs_export",
         citation="api-surface.md §2.6 line 37",
+        action_cell="Run lifecycle, keep, legal hold, destroy (§2.6)",
         line=396,
         route=Route("GET", lambda ctx: (f"/runs/{ctx.run_id}/export", None)),
         roles=(Role.admin, Role.gameadmin),
@@ -976,6 +1079,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="definitions_export_yaml",
         citation="api-surface.md §2.6 (Definitions table)",
+        action_cell="Definition authoring (§2.6)",
         line=395,
         route=Route(
             "GET", lambda ctx: (f"/event-definitions/{ctx.definition_id}/export-yaml", None)
@@ -991,6 +1095,7 @@ MATRIX: list[MatrixRow] = [
     MatrixRow(
         name="leaderboard_read",
         citation="api-surface.md §2.17 line 398 (§2.12)",
+        action_cell="`GET /leaderboard`, `GET /event`, `GET /challenges*`",
         line=398,
         route=Route("GET", lambda ctx: ("/leaderboard", None)),
         roles=(Role.admin, Role.gameadmin, Role.player),
@@ -1002,11 +1107,11 @@ MATRIX: list[MatrixRow] = [
     ),
 ]
 
-_cited_lines = {row.line for row in MATRIX}
-assert _cited_lines == EXPECTED_SECTION_217_LINES, (
-    "MATRIX does not cite every §2.17 table line (378-398): "
-    f"missing {sorted(EXPECTED_SECTION_217_LINES - _cited_lines)}, "
-    f"unexpected {sorted(_cited_lines - EXPECTED_SECTION_217_LINES)}. "
+_cited_rows = {row.action_cell for row in MATRIX}
+assert _cited_rows == EXPECTED_SECTION_217_ROWS, (
+    "MATRIX does not cite every §2.17 table row's Action cell: "
+    f"missing {sorted(EXPECTED_SECTION_217_ROWS - _cited_rows)}, "
+    f"unexpected {sorted(_cited_rows - EXPECTED_SECTION_217_ROWS)}. "
     "A route added to (or removed from) §2.17 without updating this file "
     "is exactly what this assertion exists to catch — see the module "
     "docstring's 'Completeness is an assertion, not an assumption'."

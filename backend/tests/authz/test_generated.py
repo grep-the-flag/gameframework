@@ -57,7 +57,7 @@ from ..conftest import (
 )
 from .matrix import MATRIX, MatrixRow, RouteContext
 
-ACTIVE_ROWS = [row for row in MATRIX if row.skip_milestone is None]
+ACTIVE_ROWS = [row for row in MATRIX if row.skip_milestone is None and row.generatable]
 ALL_ROLES = (Role.admin, Role.gameadmin, Role.player)
 
 

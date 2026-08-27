@@ -32,7 +32,7 @@ from .test_generated import SCENARIOS
 
 _FORBIDDEN_KEYS = frozenset({"username", "display_name", "email"})
 
-ACTIVE_ROWS = [row for row in MATRIX if row.skip_milestone is None]
+ACTIVE_ROWS = [row for row in MATRIX if row.skip_milestone is None and row.generatable]
 _NON_STAFF_REACHABLE_ROWS = [row for row in ACTIVE_ROWS if Role.player in row.roles]
 
 

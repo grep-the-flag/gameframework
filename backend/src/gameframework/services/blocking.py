@@ -23,10 +23,13 @@ scenarios produce byte-identical headers. The fix drops the capability
 rather than carry a rule that cannot make the distinction: only the
 peer's own rightmost append is ever consulted, never anything to its
 left, so a forged value is unreachable by construction. Multi-hop
-resolution is deliberately not supported (ADR-0007) — `warn_if_multi_hop_
-configured` below is what tells an operator who configures more than one
-`trusted_proxies` entry that every source now resolves through the one
-peer, degrading the per-source throttle to an installation-wide one.
+resolution is deliberately not supported (ADR-0007) — `log_trusted_
+proxies_model` below is what states this at boot for any configured
+`trusted_proxies`: there is no way to tell a correctly configured HA pair
+(several legitimate identities of the same peer) from an actual chained
+hop from the configuration alone, so the log line describes the model
+rather than trying to detect the bad case, and an operator running a
+genuine chain has to recognise their own topology against it.
 """
 
 import ipaddress
@@ -69,22 +72,31 @@ def normalize_source(addr: str) -> str:
 _NO_PEER_SENTINEL = "0.0.0.0"
 
 
-def warn_if_multi_hop_configured(settings: Settings) -> None:
-    """Called once at boot (`main.py`'s `create_app()`). More than one
-    `trusted_proxies` entry no longer means "a chain this many hops deep"
-    — it means an HA pair, all still resolving through the same single
-    append. An operator who genuinely runs a proxy chain gets every
-    client collapsed onto its inner hop silently unless this says so at
-    startup, not mid-event.
+def log_trusted_proxies_model(settings: Settings) -> None:
+    """Called once at boot (`main.py`'s `create_app()`), whenever
+    `trusted_proxies` is configured at all. This states the model rather
+    than detecting a misconfiguration: there is no observable difference
+    between a correctly configured HA pair (several legitimate identities
+    of the *same* peer) and an actual chained hop (a topology this
+    function no longer supports) — that is the same indistinguishability
+    `resolve_client_address`'s own docstring rests its whole design on.
+    Warning only above some entry count would fire on every correct HA
+    deployment and teach operators to ignore it, which is exactly the one
+    case this must not be ignored. So it logs at `INFO`, unconditionally,
+    for any non-empty configuration: the fact stated is true regardless of
+    how many addresses are listed, and an operator running a genuine chain
+    has to recognise their own topology against it, because nothing here
+    can recognise it for them.
     """
-    if len(settings.trusted_proxies) > 1:
-        _logger.warning(
-            "trusted_proxies configures %d addresses (%s); only the direct "
-            "socket peer's own X-Forwarded-For append is honoured -- "
-            "multi-hop client-address resolution is not supported "
-            "(ADR-0007). Every source now resolves through this one peer, "
-            "which degrades the per-source auth throttle to an "
-            "installation-wide one.",
+    if settings.trusted_proxies:
+        _logger.info(
+            "trusted_proxies is configured (%d address(es): %s). The "
+            "framework honours only the direct socket peer's own "
+            "X-Forwarded-For append; every listed address is treated as "
+            "an alternate identity of that one peer. If any of them is "
+            "instead a chained hop, client addresses resolve to the inner "
+            "proxy and the per-source auth throttle becomes "
+            "installation-wide (ADR-0007).",
             len(settings.trusted_proxies),
             ", ".join(settings.trusted_proxies),
         )

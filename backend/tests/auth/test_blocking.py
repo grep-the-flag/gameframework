@@ -52,9 +52,9 @@ from gameframework.db.models.runs import RunStatus
 from gameframework.db.session import get_session
 from gameframework.main import app
 from gameframework.services.blocking import (
+    log_trusted_proxies_model,
     normalize_source,
     resolve_client_address,
-    warn_if_multi_hop_configured,
 )
 from gameframework.services.passwords import hash_password
 from gameframework.services.secrets import ensure_signing_key
@@ -903,38 +903,59 @@ def test_distinct_ipv4_mapped_ipv6_hosts_normalize_to_distinct_keys() -> None:
     assert keys == {"203.0.113.9/32", "198.51.100.1/32", "8.8.8.8/32"}
 
 
-def test_more_than_one_trusted_proxy_logs_a_boot_warning_naming_the_dropped_capability(
+def test_any_configured_trusted_proxies_logs_the_model_at_info(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Daniel's ruling on this branch: the dropped multi-hop capability
-    must be loud, not documented-only. `warn_if_multi_hop_configured` is
-    what `create_app()` calls at boot; a `Settings` carrying more than one
-    `trusted_proxies` entry must log a warning naming that only the direct
-    peer's own append is honoured, so an operator running a genuine chain
-    finds out at startup rather than mid-event. Called directly (not
-    through `create_app()`/the `lru_cache`d `get_settings()`) so the test
-    binds the warning to the settings it was actually given.
-    """
-    settings = get_settings().model_copy(update={"trusted_proxies": ["10.0.0.5/32", "10.0.0.6/32"]})
-
-    with caplog.at_level(logging.WARNING):
-        warn_if_multi_hop_configured(settings)
-
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("trusted_proxies" in message and "one" in message.lower() for message in messages), (
-        f"expected a boot-time warning naming the dropped multi-hop capability, got {messages!r}"
-    )
-
-
-def test_exactly_one_trusted_proxy_logs_no_warning(caplog: pytest.LogCaptureFixture) -> None:
-    """The negative case: an HA pair sharing one logical proxy identity is
-    still one *hop*, so the ordinary single-entry (or empty) configuration
-    must not warn — the warning is for a chain, not for high availability
-    misread as one.
+    """Daniel's correction to this branch's first draft: there is no
+    observable signal that separates a correctly configured HA pair from
+    an actual chained hop — that is the same indistinguishability the
+    finding itself rests on — so `log_trusted_proxies_model` cannot
+    condition on entry count without firing on every correct HA
+    deployment and teaching operators to ignore it. It states the model
+    unconditionally, at `INFO`, for *any* non-empty configuration —
+    proven here with a single entry, the case a length-conditioned
+    warning would have stayed silent for. Called directly (not through
+    `create_app()`/the `lru_cache`d `get_settings()`) so the test binds
+    the log line to the settings it was actually given.
     """
     settings = get_settings().model_copy(update={"trusted_proxies": ["10.0.0.6/32"]})
 
-    with caplog.at_level(logging.WARNING):
-        warn_if_multi_hop_configured(settings)
+    with caplog.at_level(logging.INFO):
+        log_trusted_proxies_model(settings)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        record.levelno == logging.INFO
+        and "trusted_proxies" in record.getMessage()
+        and "direct" in record.getMessage()
+        for record in caplog.records
+    ), f"expected an INFO line stating the trusted-proxy model, got {messages!r}"
+
+
+def test_multiple_trusted_proxies_also_logs_the_same_model_at_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same line fires for an HA pair (several entries) as for one —
+    the model does not change with the count, and neither does the log
+    level: this must never become a `WARNING` a correct HA deployment
+    trips on every boot.
+    """
+    settings = get_settings().model_copy(update={"trusted_proxies": ["10.0.0.5/32", "10.0.0.6/32"]})
+
+    with caplog.at_level(logging.INFO):
+        log_trusted_proxies_model(settings)
+
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.INFO
+
+
+def test_no_trusted_proxies_configured_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    """The default, empty `trusted_proxies` — no direct proxy configured
+    at all — has no model to state, so nothing logs.
+    """
+    settings = get_settings().model_copy(update={"trusted_proxies": []})
+
+    with caplog.at_level(logging.INFO):
+        log_trusted_proxies_model(settings)
 
     assert caplog.records == []

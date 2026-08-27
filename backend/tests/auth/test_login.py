@@ -22,15 +22,19 @@ and (in `test_session_lifecycle.py`) `session_cookie_ambiguous` — are named
 in api-surface.md §1/§2.2. They are not invented here.
 """
 
+import statistics
+import time
+import uuid
 from datetime import UTC, datetime
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from gameframework.config import get_settings
-from gameframework.db.models.identity import Role
+from gameframework.db.models.identity import BlockedAddress, Role
 from gameframework.db.models.runs import RunStatus
 from gameframework.main import app
 from gameframework.services.passwords import hash_password
@@ -354,3 +358,90 @@ def test_participant_login_works_in_paused_and_finished(
 
     assert response.status_code == 200
     assert SESSION_COOKIE in response.cookies
+
+
+def test_login_response_time_does_not_distinguish_unknown_staff_username_from_wrong_password(
+    client: TestClient, db_session: Session
+) -> None:
+    """M2 security gate Task 20, finding: Medium. Before this fix, an
+    unknown username short-circuited before `verify_password` ran at all,
+    while a known username with a wrong password paid a full Argon2id
+    verification a few lines later — both answer the byte-identical `401
+    invalid_credentials`, so response latency alone (tens of milliseconds
+    against sub-millisecond) told the two apart. For staff there is no
+    other tell: the participant-specific 409s never fire for `admin`/
+    `gameadmin`, so timing was the *only* channel, and ADR-0007's accepted
+    login oracle names four categories, all distinguished by response
+    *content* — never by latency, and none of the four is "a privileged
+    account's existence."
+
+    `services.passwords.DUMMY_PASSWORD_HASH` is what closes it: an unknown
+    username now pays the same Argon2id cost against a fixed hash nothing
+    derives from real data, so both paths do one lookup plus one
+    verification. The two medians can never be made exactly equal —
+    scheduling noise and the unknown path's `SELECT` finding no row
+    against the known path's finding one are both real, small differences
+    — so this asserts a **2x band** rather than equality: tight enough
+    that the ~30-50x gap the pre-fix code produced (Argon2id dominates at
+    tens of ms; a failed lookup is sub-millisecond) would still fail it
+    outright, loose enough that ordinary interleaved-sample jitter on a
+    shared CI runner does not make the test flaky.
+    """
+    n_samples = 30
+    password = "Correct-Staff-Passw0rd!"
+    username = f"staff-{uuid.uuid4().hex}"
+    make_user(
+        db_session,
+        username=username,
+        role=Role.admin,
+        must_change_password=False,
+        password_hash=hash_password(password),
+    )
+
+    def reset_block() -> None:
+        # This is a timing measurement, not a test of the block itself
+        # (test_blocking.py's job) — driving far more than five attempts
+        # from one source needs the counter cleared between every call.
+        db_session.execute(delete(BlockedAddress))
+        db_session.commit()
+
+    known_wrong_password_times: list[float] = []
+    unknown_username_times: list[float] = []
+
+    # Interleaved, not block-then-block, so a shared warm-up effect
+    # cannot itself explain a gap between the two groups.
+    for _ in range(n_samples):
+        reset_block()
+        start = time.perf_counter()
+        known_response = client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": "definitely-wrong-password"},
+        )
+        known_wrong_password_times.append(time.perf_counter() - start)
+        assert known_response.status_code == 401
+        assert known_response.json()["code"] == "invalid_credentials"
+
+        reset_block()
+        start = time.perf_counter()
+        unknown_response = client.post(
+            "/api/v1/auth/login",
+            json={
+                "username": f"no-such-user-{uuid.uuid4().hex}",
+                "password": "irrelevant-password",
+            },
+        )
+        unknown_username_times.append(time.perf_counter() - start)
+        assert unknown_response.status_code == 401
+        assert unknown_response.json()["code"] == "invalid_credentials"
+
+    known_median = statistics.median(known_wrong_password_times)
+    unknown_median = statistics.median(unknown_username_times)
+    ratio = known_median / unknown_median
+
+    assert 0.5 <= ratio <= 2.0, (
+        f"known-username/wrong-password median={known_median * 1000:.2f}ms, "
+        f"unknown-username median={unknown_median * 1000:.2f}ms, "
+        f"ratio={ratio:.2f} -- expected within a 2x band of each other now "
+        "that both paths pay one Argon2id verification; a ratio outside "
+        "this band means account existence is learnable via timing again"
+    )

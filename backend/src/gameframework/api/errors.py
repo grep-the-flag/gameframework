@@ -6,18 +6,24 @@ because replay safety comes from each route's own natural business key
 rather than a replay store.
 """
 
+import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from http import HTTPStatus
 from typing import Annotated, NoReturn, TypedDict
 
 from fastapi import Header
+from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
-from gameframework.api.middleware import REQUEST_ID_HEADER, get_request_id
+from gameframework.api.middleware import REQUEST_ID_HEADER, get_request_id, request_id_from_scope
 
 PROBLEM_CONTENT_TYPE = "application/problem+json"
+
+_logger = logging.getLogger(__name__)
 
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._~-]{1,255}$")
 
@@ -84,22 +90,32 @@ def too_many_requests(
     raise RateLimitError(retry_after=retry_after, code=code, detail=detail)
 
 
-async def problem_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, ProblemError)
-    request_id = get_request_id() or ""
+def _problem_response(
+    *,
+    status: int,
+    code: str,
+    request_id: str,
+    detail: str | None = None,
+    fields: Sequence[FieldError] | None = None,
+    extensions: Mapping[str, object] | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    """The one place a problem body is built (api-surface.md §1), whether a
+    route raised the error or the framework did.
+    """
     body: dict[str, object] = {
         "type": "about:blank",
-        "title": HTTPStatus(exc.status).phrase,
-        "status": exc.status,
-        "code": exc.code,
+        "title": HTTPStatus(status).phrase,
+        "status": status,
+        "code": code,
         "request_id": request_id,
     }
-    if exc.detail is not None:
-        body["detail"] = exc.detail
-    if exc.fields is not None:
-        body["fields"] = list(exc.fields)
-    if exc.extensions is not None:
-        collisions = _RESERVED_PROBLEM_MEMBERS & exc.extensions.keys()
+    if detail is not None:
+        body["detail"] = detail
+    if fields is not None:
+        body["fields"] = list(fields)
+    if extensions is not None:
+        collisions = _RESERVED_PROBLEM_MEMBERS & extensions.keys()
         if collisions:
             # Unconditional, not `assert`: this enforces a contract rather
             # than documenting an invariant, and `python -O`/`PYTHONOPTIMIZE`
@@ -112,13 +128,87 @@ async def problem_error_handler(request: Request, exc: Exception) -> JSONRespons
                 f"member(s) {sorted(collisions)} (api-surface.md §1) — rename "
                 f"at the raise site"
             )
-        body.update(exc.extensions)
-    headers = {REQUEST_ID_HEADER: request_id}
-    if isinstance(exc, RateLimitError):
-        headers["Retry-After"] = str(exc.retry_after)
+        body.update(extensions)
     return JSONResponse(
-        status_code=exc.status, content=body, media_type=PROBLEM_CONTENT_TYPE, headers=headers
+        status_code=status,
+        content=body,
+        media_type=PROBLEM_CONTENT_TYPE,
+        headers={REQUEST_ID_HEADER: request_id, **(headers or {})},
     )
+
+
+async def problem_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, ProblemError)
+    headers = {"Retry-After": str(exc.retry_after)} if isinstance(exc, RateLimitError) else None
+    return _problem_response(
+        status=exc.status,
+        code=exc.code,
+        request_id=get_request_id() or "",
+        detail=exc.detail,
+        fields=exc.fields,
+        extensions=exc.extensions,
+        headers=headers,
+    )
+
+
+async def request_validation_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A request the framework's own validation refuses, before any route
+    logic runs (api-surface.md §1): `request_invalid`, one `fields` entry
+    per offending location. Only the message is serialized — pydantic's
+    `input` would echo the submitted value back, and a rejected body can be
+    a password.
+
+    A route's own `422` (`idempotency_key_invalid`, `participation_not_found`)
+    is a `ProblemError` and never reaches this handler, so `request_invalid`
+    does not replace a named code.
+    """
+    assert isinstance(exc, RequestValidationError)
+    fields = [
+        FieldError(field=".".join(str(part) for part in error["loc"]), message=error["msg"])
+        for error in exc.errors()
+    ]
+    return _problem_response(
+        status=422,
+        code="request_invalid",
+        request_id=request_id_from_scope(request.scope),
+        fields=fields,
+    )
+
+
+_ROUTING_CODES = {404: "route_not_found", 405: "method_not_allowed"}
+
+
+async def http_exception_handler(request: Request, exc: Exception) -> Response:
+    """The routing layer's own refusals: no route serves the path (`404`,
+    `route_not_found`) or the route does not serve the method (`405`,
+    `method_not_allowed`, with the `Allow` header the router set). No app
+    code raises `HTTPException`, so every one reaching this handler comes
+    from routing; any other status is left to the framework's default.
+    """
+    assert isinstance(exc, StarletteHTTPException)
+    code = _ROUTING_CODES.get(exc.status_code)
+    if code is None:
+        return await default_http_exception_handler(request, exc)
+    return _problem_response(
+        status=exc.status_code,
+        code=code,
+        request_id=request_id_from_scope(request.scope),
+        headers=exc.headers,
+    )
+
+
+async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """An unhandled exception (api-surface.md §1): `internal_error`, its text
+    logged with the request id and never serialized.
+
+    This runs in Starlette's outermost `ServerErrorMiddleware`, outside
+    `RequestIdMiddleware` and after that middleware has reset its context
+    variable — so the id comes from the scope, and `X-Request-Id` is set
+    here because the middleware's own send wrapper is not in this path.
+    """
+    request_id = request_id_from_scope(request.scope)
+    _logger.error("unhandled exception (request_id=%s)", request_id, exc_info=exc)
+    return _problem_response(status=500, code="internal_error", request_id=request_id)
 
 
 async def idempotency_key(

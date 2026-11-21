@@ -16,15 +16,15 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from fastapi import Depends, Request, Response
-from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from gameframework.api.errors import ProblemError, forbidden, not_found
 from gameframework.config import Settings, get_settings
 from gameframework.db.models.identity import Role, User
 from gameframework.db.models.identity import Session as SessionModel
-from gameframework.db.models.runs import EventParticipation, Team
+from gameframework.db.models.runs import Team
 from gameframework.db.session import get_session
+from gameframework.services.runs import resolve_current_team
 from gameframework.services.sessions import (
     CSRF_TOKEN_TTL,
     PRESESSION_COOKIE_NAME,
@@ -189,30 +189,25 @@ def _require_csrf(auth: AuthContext, request: Request, settings: Settings) -> No
 
 
 def resolve_captaincy(db: DbSession, user: User) -> Team | None:
-    """The team `user` currently captains, or `None` if they captain none.
-    `captain` is derived from `team.captain_user_id` (data-model.md
-    §3.1/§3.11), never a stored role, so every route that needs to tell a
-    captain from an ordinary player — the login activation gate, the
-    `POST /auth/otp` own-team scope check, and the player branch of
-    `POST /auth/password` (M2-Task-Plan.md Task 4) — resolves it the same
-    way, through the live participation, rather than trusting a claim.
+    """The team `user` captains in their current run, or `None` if they
+    captain none there. `captain` is derived from `team.captain_user_id`
+    (data-model.md §3.1/§3.11), never a stored role, so every route that
+    needs to tell a captain from an ordinary player — the login activation
+    gate, the `POST /auth/otp` and `PATCH /teams/{id}` own-team scope
+    checks, and the player branch of `POST /auth/password` — resolves it
+    the same way, through the live participation, rather than trusting a
+    claim.
 
-    Walks every participation the user holds rather than a single "current
-    run" one: that resolution is Task 12's, and this milestone's fixtures
-    give each participant exactly one, so the first match is unambiguous
-    for now.
+    "Current run" is `resolve_current_run`'s (api-surface.md §2.6) and
+    nothing else's: the caller captains a team only if their participation
+    in *that* run has a team whose captain is them (§2.17). A team they
+    captained in a run they have since left behind — a `finished` one,
+    next to the `running` run they now play in — makes them a captain of
+    nothing, exactly as for any player.
     """
-    participations = (
-        db.execute(select(EventParticipation).where(EventParticipation.user_id == user.id))
-        .scalars()
-        .all()
-    )
-    for participation in participations:
-        if participation.team_id is None:
-            continue
-        team = db.get(Team, participation.team_id)
-        if team is not None and team.captain_user_id == user.id:
-            return team
+    team = resolve_current_team(db, user)
+    if team is not None and team.captain_user_id == user.id:
+        return team
     return None
 
 

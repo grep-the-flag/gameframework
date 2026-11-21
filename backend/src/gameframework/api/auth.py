@@ -40,7 +40,7 @@ from gameframework.services.bootstrap import (
     remove_initial_admin_credentials_if_present,
 )
 from gameframework.services.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
-from gameframework.services.runs import resolve_current_run
+from gameframework.services.runs import resolve_current_run, resolve_current_team
 from gameframework.services.sessions import (
     CSRF_TOKEN_TTL,
     PRESESSION_COOKIE_NAME,
@@ -223,10 +223,20 @@ def logout(
 @router.get("/session")
 def read_session(
     auth: AuthContext = Depends(current_session(*_ANY_AUTHENTICATED_ROLE)),
+    db: DbSession = Depends(get_session),
 ) -> dict[str, object]:
+    """api-surface.md §2.2: the caller's team in their current run as
+    `team_id` — `null` when they have none, which staff never do — and
+    whether they captain it as `is_captain`. Both come from the one
+    current-run derivation `resolve_captaincy` uses, so the session never
+    names a team the caller's authorization would not recognise.
+    """
+    team = resolve_current_team(db, auth.user)
     return {
         "user_id": str(auth.user.id),
         "role": auth.user.role.value,
+        "team_id": str(team.id) if team is not None else None,
+        "is_captain": team is not None and team.captain_user_id == auth.user.id,
         "must_change_password": auth.user.must_change_password,
     }
 

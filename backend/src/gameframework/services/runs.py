@@ -386,3 +386,32 @@ def resolve_current_run(db: Session, user: User | None) -> EventRun | None:
     for _, run in rows:
         return run
     return None
+
+
+def resolve_current_team(db: Session, user: User) -> Team | None:
+    """The team `user` belongs to in their current run, or `None` when the
+    run (api-surface.md §2.6, `resolve_current_run`) holds no participation
+    of theirs, or one without a team.
+
+    The single derivation behind everything that asks "which team is this
+    caller on" — captaincy (`api/deps.py` `resolve_captaincy`) and the
+    team `GET /auth/session` serves (§2.2) — so the answer is always for
+    the run the caller is actually in, never for whichever participation
+    a query happens to return first. A staff caller holds no participation
+    in any run, so `None` is what the lookup yields for them, not a
+    special case of it. `event_participation` is unique per
+    `(user_id, event_run_id)` (data-model.md §3.10), so at most one row
+    can match.
+    """
+    run = resolve_current_run(db, user)
+    if run is None:
+        return None
+    participation = db.execute(
+        select(EventParticipation).where(
+            EventParticipation.user_id == user.id,
+            EventParticipation.event_run_id == run.id,
+        )
+    ).scalar_one_or_none()
+    if participation is None or participation.team_id is None:
+        return None
+    return db.get(Team, participation.team_id)

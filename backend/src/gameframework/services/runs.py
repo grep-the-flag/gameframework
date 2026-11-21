@@ -393,11 +393,13 @@ def resolve_current_team(db: Session, user: User) -> Team | None:
     run (api-surface.md §2.6, `resolve_current_run`) holds no participation
     of theirs, or one without a team.
 
-    The single derivation behind everything that asks "which team is this
-    caller on" — captaincy (`api/deps.py` `resolve_captaincy`) and the
-    team `GET /auth/session` serves (§2.2) — so the answer is always for
-    the run the caller is actually in, never for whichever participation
-    a query happens to return first. A staff caller holds no participation
+    The derivation captaincy (`api/deps.py` `resolve_captaincy`) and the
+    team `GET /auth/session` serves (§2.2) share, so both answer for the
+    run the caller is actually in, never for whichever participation a
+    query happens to return first. `start_challenge` keeps its own lookup
+    in the run it is handed, because it must tell a missing participation
+    (`NoParticipationError`) from a teamless one, which this function
+    collapses into `None`. A staff caller holds no participation
     in any run, so `None` is what the lookup yields for them, not a
     special case of it. `event_participation` is unique per
     `(user_id, event_run_id)` (data-model.md §3.10), so at most one row

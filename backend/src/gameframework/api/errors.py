@@ -179,21 +179,37 @@ _ROUTING_CODES = {404: "route_not_found", 405: "method_not_allowed"}
 
 
 async def http_exception_handler(request: Request, exc: Exception) -> Response:
-    """The routing layer's own refusals: no route serves the path (`404`,
-    `route_not_found`) or the route does not serve the method (`405`,
-    `method_not_allowed`, with the `Allow` header the router set). No app
-    code raises `HTTPException`, so every one reaching this handler comes
-    from routing; any other status is left to the framework's default.
+    """The `HTTPException`s the framework itself raises (api-surface.md §1).
+    No app code raises one, so every one reaching this handler is the
+    framework's:
+
+    - `404` / `405` come from routing: no route serves the path
+      (`route_not_found`) or the route does not serve the method
+      (`method_not_allowed`, with the `Allow` header the router set).
+    - `400` comes from a body the framework cannot parse — FastAPI for its
+      own body handling, Starlette's `request.form()` for a malformed
+      multipart body, as the two upload routes read theirs. That is
+      `request_invalid` with the status kept at `400` and a single
+      `fields` entry, `body`, carrying the parser's message and none of
+      what was submitted.
+
+    Any other status is left to the framework's default.
     """
     assert isinstance(exc, StarletteHTTPException)
+    request_id = request_id_from_scope(request.scope)
+    if exc.status_code == 400:
+        return _problem_response(
+            status=400,
+            code="request_invalid",
+            request_id=request_id,
+            fields=[FieldError(field="body", message=str(exc.detail))],
+            headers=exc.headers,
+        )
     code = _ROUTING_CODES.get(exc.status_code)
     if code is None:
         return await default_http_exception_handler(request, exc)
     return _problem_response(
-        status=exc.status_code,
-        code=code,
-        request_id=request_id_from_scope(request.scope),
-        headers=exc.headers,
+        status=exc.status_code, code=code, request_id=request_id, headers=exc.headers
     )
 
 

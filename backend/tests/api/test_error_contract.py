@@ -13,6 +13,7 @@ framework's default body and is expected to fail on the assertion on `code`
 
 import asyncio
 import json
+import logging
 import uuid
 
 import pytest
@@ -115,6 +116,35 @@ def test_malformed_uuid_in_a_path_is_request_invalid(
     assert "not-a-uuid" not in response.text
 
 
+def test_body_the_framework_cannot_parse_is_request_invalid_with_status_400(
+    client: TestClient, db_session: Session
+) -> None:
+    """api-surface.md §1: `request_invalid` is "`422`, or `400` for a body
+    that cannot be parsed", with the location `body` alone. A multipart
+    request without a boundary is refused by the parser inside
+    `request.form()`, which `POST /event-definitions/import` (admin-only)
+    calls for its upload — so the framework, not the route, raises the
+    `400`. What the client submitted is not echoed back.
+    """
+    _login_as_admin(client, db_session)
+    request_id = str(uuid.uuid4())
+    submitted = f"submitted-{uuid.uuid4().hex}"
+
+    response = client.post(
+        "/api/v1/event-definitions/import",
+        content=submitted.encode(),
+        headers={"Content-Type": "multipart/form-data", "X-Request-Id": request_id},
+    )
+
+    body = _assert_problem(response, status=400, code="request_invalid", request_id=request_id)
+    fields = body["fields"]
+    assert isinstance(fields, list)
+    assert len(fields) == 1
+    assert fields[0]["field"] == "body"
+    assert fields[0]["message"]
+    assert submitted not in response.text
+
+
 # --------------------------------------------------------------------------
 # route_not_found — and distinct from object_not_found
 # --------------------------------------------------------------------------
@@ -171,21 +201,20 @@ def test_method_a_route_does_not_serve_is_method_not_allowed(client: TestClient)
 # --------------------------------------------------------------------------
 
 
-def test_http_exception_other_than_404_and_405_keeps_the_framework_default() -> None:
-    """No app code raises `HTTPException`, so no real route can reach this
-    branch and the handler is called directly. Only `404` and `405` are the
-    routing layer's refusals the contract names; any other status must come
-    out exactly as the framework renders it — its `detail` body, its
-    headers — with no `code` invented for it.
+def test_http_exception_outside_400_404_405_keeps_the_framework_default() -> None:
+    """No real route can reach this branch, so the handler is called
+    directly. `400`, `404` and `405` are the framework refusals the contract
+    names; any other status must come out exactly as the framework renders
+    it — its `detail` body, its headers — with no `code` invented for it.
     """
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
     exc = StarletteHTTPException(
-        status_code=400, detail="framework detail", headers={"X-Kept": "1"}
+        status_code=403, detail="framework detail", headers={"X-Kept": "1"}
     )
 
     response = asyncio.run(http_exception_handler(request, exc))
 
-    assert response.status_code == 400
+    assert response.status_code == 403
     assert json.loads(bytes(response.body)) == {"detail": "framework detail"}
     assert response.headers.get("X-Kept") == "1"
     assert not response.headers["content-type"].startswith("application/problem+json")
@@ -256,14 +285,20 @@ def test_unhandled_exception_is_internal_error_and_never_serialized(
 
 
 def test_unhandled_exception_carries_the_minted_request_id(
-    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """No `X-Request-Id` is sent, so the middleware mints the id. An inbound
     id also sits in the request headers, where a handler reading them would
     find it; a minted one lives on the middleware's context variable alone
     unless something puts it on the request scope, and that variable is
     reset by the time the `500` is answered. The id the route recorded
-    while it ran is the one the response must carry.
+    while it ran is the one the response must carry — and the one the
+    handler's own log record names, with the exception attached, because the
+    text that is kept out of the response is kept in the log (api-surface.md
+    §1: "logged with the request id").
     """
     response, sentinel, seen_by_route = _get_users_made_to_raise(
         client, db_session, monkeypatch, headers={}
@@ -276,3 +311,13 @@ def test_unhandled_exception_carries_the_minted_request_id(
     _assert_problem(response, status=500, code="internal_error", request_id=minted)
     assert sentinel not in response.text
     assert sentinel not in str(response.headers)
+
+    logged = [
+        record
+        for record in caplog.records
+        if record.name == "gameframework.api.errors" and record.levelno == logging.ERROR
+    ]
+    assert len(logged) == 1
+    assert minted in logged[0].getMessage()
+    assert logged[0].exc_info is not None
+    assert str(logged[0].exc_info[1]) == sentinel

@@ -15,12 +15,23 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 REQUEST_ID_HEADER = "X-Request-Id"
+_STATE_KEY = "request_id"
 
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
 def get_request_id() -> str | None:
     return _request_id.get()
+
+
+def request_id_from_scope(scope: Scope) -> str:
+    """The id for a request, read from the ASGI scope rather than the
+    ContextVar. The `500` handler runs in Starlette's outermost
+    `ServerErrorMiddleware`, after this middleware has reset the ContextVar,
+    so only the scope — the one dict every layer of the request shares —
+    still carries the id by then.
+    """
+    return scope.get("state", {}).get(_STATE_KEY, "")
 
 
 class RequestIdMiddleware:
@@ -35,6 +46,7 @@ class RequestIdMiddleware:
         headers = MutableHeaders(scope=scope)
         request_id = headers.get(REQUEST_ID_HEADER.lower()) or str(uuid.uuid4())
         token = _request_id.set(request_id)
+        scope.setdefault("state", {})[_STATE_KEY] = request_id
 
         async def send_wrapper(message: Message) -> None:
             if message["type"] == "http.response.start":

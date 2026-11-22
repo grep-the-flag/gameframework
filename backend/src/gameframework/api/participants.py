@@ -34,13 +34,24 @@ router = APIRouter(tags=["participants"])
 _STAFF_ROLES = (Role.admin, Role.gameadmin)
 
 
-def _participant_out(participant: ImportedParticipant) -> dict[str, object]:
-    return {
-        "user_id": str(participant.user_id),
-        "username": participant.username,
-        "handle": participant.handle,
-        "reused": participant.reused,
-    }
+class ParticipantOut(BaseModel):
+    user_id: str
+    username: str
+    handle: str
+    reused: bool
+
+
+class ImportParticipantsResponse(BaseModel):
+    participants: list[ParticipantOut]
+
+
+def _participant_out(participant: ImportedParticipant) -> ParticipantOut:
+    return ParticipantOut(
+        user_id=str(participant.user_id),
+        username=participant.username,
+        handle=participant.handle,
+        reused=participant.reused,
+    )
 
 
 def _get_run(db: DbSession, run_id: uuid.UUID) -> EventRun:
@@ -89,7 +100,7 @@ async def import_users(
     request: Request,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> ImportParticipantsResponse:
     """Bulk import — CSV via `multipart/form-data` (python-multipart) or a
     bare JSON list, distinguished by `Content-Type` rather than by two
     routes, since api-surface.md §2.4 names one path for both."""
@@ -111,7 +122,9 @@ async def import_users(
     except (RosterFrozenError, DuplicateParticipationError) as exc:
         _raise_for(exc)
 
-    return {"participants": [_participant_out(p) for p in report.participants]}
+    return ImportParticipantsResponse(
+        participants=[_participant_out(p) for p in report.participants]
+    )
 
 
 class CreateParticipantRequest(BaseModel):
@@ -126,7 +139,7 @@ def create_user_in_run(
     body: CreateParticipantRequest,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> ParticipantOut:
     """The single-account form (api-surface.md §2.4): same rules, one row."""
     run = _get_run(db, run_id)
     row = ParticipantRow(username=body.username, name=body.name, email=body.email)

@@ -7,7 +7,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
@@ -32,18 +32,35 @@ _STAFF_ROLES = (Role.admin, Role.gameadmin)
 _ANY_ROLE = (Role.admin, Role.gameadmin, Role.player)
 
 
-def _user_out(user: User) -> dict[str, object]:
-    return {
-        "id": str(user.id),
-        "username": user.username,
-        "display_name": user.display_name,
-        "email": user.email,
-        "role": user.role.value,
-        "is_active": user.is_active,
-        "must_change_password": user.must_change_password,
-        "preferred_language": user.preferred_language,
-        "deleted_at": user.deleted_at.isoformat() if user.deleted_at is not None else None,
-    }
+class UserOut(BaseModel):
+    id: str
+    username: str
+    display_name: str | None
+    email: str | None
+    role: str
+    is_active: bool
+    must_change_password: bool
+    preferred_language: str
+    deleted_at: str | None
+
+
+class UserListResponse(BaseModel):
+    items: list[UserOut]
+    next_cursor: str | None
+
+
+def _user_out(user: User) -> UserOut:
+    return UserOut(
+        id=str(user.id),
+        username=user.username,
+        display_name=user.display_name,
+        email=user.email,
+        role=user.role.value,
+        is_active=user.is_active,
+        must_change_password=user.must_change_password,
+        preferred_language=user.preferred_language,
+        deleted_at=user.deleted_at.isoformat() if user.deleted_at is not None else None,
+    )
 
 
 @router.get("/users")
@@ -52,10 +69,12 @@ def list_users(
     limit: int = Query(default=50, ge=1, le=200),
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> UserListResponse:
     """api-surface.md §1: cursor-paginated, never an unbounded list."""
     page = paginate(db, select(User), cursor=cursor, limit=limit)
-    return {"items": [_user_out(user) for user in page.items], "next_cursor": page.next_cursor}
+    return UserListResponse(
+        items=[_user_out(user) for user in page.items], next_cursor=page.next_cursor
+    )
 
 
 class CreateStaffRequest(BaseModel):
@@ -69,7 +88,7 @@ def create_user(
     body: CreateStaffRequest,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> UserOut:
     """Admin-only (api-surface.md §2.4): creating a staff account assigns a
     role, and role changes are admin-only and audited (§2.17 role
     administration (1)) — staff creation included. A participant is
@@ -98,7 +117,7 @@ def get_user(
     user_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> UserOut:
     """A read, not a write: the gameadmin-target rule (§2.17 role
     administration (2)) names `PATCH`, deactivate, `DELETE` and OTP issue —
     reads are unrestricted for both staff roles, same as `GET /users`.
@@ -121,7 +140,7 @@ def patch_user(
     body: PatchUserRequest,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> UserOut:
     """api-surface.md §2.17 role administration: (2) a gameadmin's writes
     reach participant accounts only — `resolve_staff_write_target` answers
     `404` for a staff target before any field is even inspected, so that
@@ -165,12 +184,16 @@ def patch_user(
     return _user_out(target)
 
 
+class DeactivateUserResponse(BaseModel):
+    pass
+
+
 @router.post("/users/{user_id}/deactivate")
 def deactivate_user(
     user_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DeactivateUserResponse:
     """The gameadmin-target rule applies here too — deactivation is a
     write (§2.17 role administration (2)). data-model.md §3.1 `is_active`:
     deactivating revokes every session the account holds, not only its
@@ -181,7 +204,11 @@ def deactivate_user(
     target.is_active = False
     revoke_sessions(db, target)
     db.commit()
-    return {}
+    return DeactivateUserResponse()
+
+
+class DeleteUserResponse(BaseModel):
+    pass
 
 
 @router.delete("/users/{user_id}")
@@ -189,7 +216,7 @@ def delete_user(
     user_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DeleteUserResponse:
     """Admin-only, not gameadmin (api-surface.md §2.4/§2.17): a role denial
     a gameadmin gets before this body ever runs, via `current_session`'s
     own role check — the object scope is `any` here, so a missing target
@@ -212,7 +239,20 @@ def delete_user(
         target_id=target.id,
         details={},
     )
-    return {}
+    return DeleteUserResponse()
+
+
+class UserExportResponse(BaseModel):
+    """Built from `export_user_inventory`'s dict, so a key that service
+    gains later must fail here rather than be filtered out of the body
+    without anyone noticing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    username: str
+    display_name: str | None
+    email: str | None
 
 
 @router.get("/users/{user_id}/export")
@@ -220,7 +260,7 @@ def export_user(
     user_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> UserExportResponse:
     """Admin-only, not gameadmin (api-surface.md §2.4/§2.17): the one
     audited exception to the staff-visibility ceiling, so it sits with the
     role accountable for the installation rather than the role that runs
@@ -243,10 +283,14 @@ def export_user(
         target_id=target.id,
         details={},
     )
-    return payload
+    return UserExportResponse.model_validate(payload)
 
 
 class LanguageRequest(BaseModel):
+    preferred_language: str
+
+
+class LanguageResponse(BaseModel):
     preferred_language: str
 
 
@@ -255,10 +299,10 @@ def set_my_language(
     body: LanguageRequest,
     auth: AuthContext = Depends(current_session(*_ANY_ROLE)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> LanguageResponse:
     """api-surface.md §2.17: `self` scope, derived from the live session —
     never a path id, so there is no other user's row this route could
     reach even in error."""
     auth.user.preferred_language = body.preferred_language
     db.commit()
-    return {"preferred_language": auth.user.preferred_language}
+    return LanguageResponse(preferred_language=auth.user.preferred_language)

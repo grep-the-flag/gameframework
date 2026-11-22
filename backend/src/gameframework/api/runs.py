@@ -50,24 +50,47 @@ def _get_run(db: DbSession, run_id: uuid.UUID) -> EventRun:
     return run
 
 
-def _run_out(run: EventRun) -> dict[str, object]:
-    return {
-        "id": str(run.id),
-        "event_definition_id": str(run.event_definition_id),
-        "definition_revision": run.definition_revision,
-        "status": run.status.value,
-        "unlock_mode": run.unlock_mode.value,
-        "scoring_mode": run.scoring_mode.value,
-        "participation_mode": run.participation_mode.value,
-        "theme_ref": run.theme_ref,
-        "gamemaster_enabled": run.gamemaster_enabled,
-        "gamemaster_provider": run.gamemaster_provider,
-        "gamemaster_endpoint": run.gamemaster_endpoint,
-        "language_default": run.language_default,
-        "grace_period_days": run.grace_period_days,
-        "otp_lifetime_minutes": run.otp_lifetime_minutes,
-        "scheduled_end": run.scheduled_end.isoformat() if run.scheduled_end else None,
-    }
+class RunOut(BaseModel):
+    id: str
+    event_definition_id: str
+    definition_revision: int
+    status: str
+    unlock_mode: str
+    scoring_mode: str
+    participation_mode: str
+    theme_ref: str | None
+    gamemaster_enabled: bool
+    gamemaster_provider: str | None
+    gamemaster_endpoint: str | None
+    language_default: str
+    grace_period_days: int
+    otp_lifetime_minutes: int
+    scheduled_end: str | None
+
+
+class PreflightResponse(BaseModel):
+    passed: bool
+    errors: list[str]
+
+
+def _run_out(run: EventRun) -> RunOut:
+    return RunOut(
+        id=str(run.id),
+        event_definition_id=str(run.event_definition_id),
+        definition_revision=run.definition_revision,
+        status=run.status.value,
+        unlock_mode=run.unlock_mode.value,
+        scoring_mode=run.scoring_mode.value,
+        participation_mode=run.participation_mode.value,
+        theme_ref=run.theme_ref,
+        gamemaster_enabled=run.gamemaster_enabled,
+        gamemaster_provider=run.gamemaster_provider,
+        gamemaster_endpoint=run.gamemaster_endpoint,
+        language_default=run.language_default,
+        grace_period_days=run.grace_period_days,
+        otp_lifetime_minutes=run.otp_lifetime_minutes,
+        scheduled_end=run.scheduled_end.isoformat() if run.scheduled_end else None,
+    )
 
 
 @router.post("/event-definitions/{definition_id}/runs", status_code=201)
@@ -75,7 +98,7 @@ def create_run_route(
     definition_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> RunOut:
     """api-surface.md §2.6: "Create a run of a published definition
     (snapshots run config); 409 while another run is running/paused"."""
     definition = _get_definition(db, definition_id)
@@ -94,7 +117,7 @@ def preflight_route(
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> PreflightResponse:
     """api-surface.md §2.6: the run-scoped half of Phase 0 — `created`-
     only, repeatable. Reports `{"passed", "errors"}` at `200` regardless of
     outcome, mirroring `POST /event-definitions/{id}/dry-run`'s own
@@ -105,7 +128,7 @@ def preflight_route(
         result = run_preflight(db, run, settings)
     except RunNotCreatedError as exc:
         raise ProblemError(409, "invalid_status_transition") from exc
-    return {"passed": result.passed, "errors": result.errors}
+    return PreflightResponse(passed=result.passed, errors=result.errors)
 
 
 class TransitionRequest(BaseModel):
@@ -126,7 +149,7 @@ def transition_route(
     auth: AuthContext = Depends(current_session(Role.admin, Role.gameadmin)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> RunOut:
     """api-surface.md §2.6: `start\\|pause\\|resume\\|finish`. `start` is
     admin-only (checked here, at the action level, beside the route's
     broader admin+gameadmin reach that `pause`/`resume`/`finish` use),
@@ -178,7 +201,7 @@ def patch_run_route(
     body: PatchRunRequest,
     auth: AuthContext = Depends(current_session(Role.admin, Role.gameadmin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> RunOut:
     """api-surface.md §2.6/§2.17: the run-operational whitelist.
     `grace_period_days` is admin-only — the GDPR clock (ADR-0019), so it
     sits with `keep`/`legal-hold`/`destroy` on the admin side rather than

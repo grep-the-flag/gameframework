@@ -6,6 +6,7 @@ a write to installation state a later reader needs to attribute).
 """
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
 from gameframework.api.deps import current_session
@@ -18,11 +19,16 @@ from gameframework.services.sessions import AuthContext
 router = APIRouter(tags=["catalog"])
 
 
+class CatalogRefreshResponse(BaseModel):
+    installed: list[str]
+    errors: list[str]
+
+
 @router.post("/catalog/refresh")
 def refresh_catalog(
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> CatalogRefreshResponse:
     report = refresh_dropin(db, settings)
-    return {"installed": report.installed, "errors": report.errors}
+    return CatalogRefreshResponse(installed=report.installed, errors=report.errors)

@@ -3,6 +3,7 @@ M2-Task-Plan.md Task 12).
 """
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
 from gameframework.api.deps import current_session
@@ -25,11 +26,32 @@ def _get_definition(db: DbSession, definition_id: object) -> EventDefinition:
     return definition
 
 
+class EventRunOut(BaseModel):
+    id: str
+    definition_revision: int
+    status: str
+    scheduled_start: str | None
+    scheduled_end: str | None
+    theme_ref: str | None
+    language_default: str
+    gamemaster_enabled: bool
+
+
+class EventDefinitionOut(BaseModel):
+    name: dict[str, str]
+    story: dict[str, str]
+
+
+class EventResponse(BaseModel):
+    run: EventRunOut
+    definition: EventDefinitionOut
+
+
 @router.get("/event")
 def get_event(
     auth: AuthContext = Depends(current_session(Role.admin, Role.gameadmin, Role.player)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> EventResponse:
     """api-surface.md §2.6: definition content plus run state; "404 when
     no run exists". Authored text is served with placeholders
     **unresolved** — substitution lands with the port map in M3 (§2.7) —
@@ -40,26 +62,27 @@ def get_event(
     if run is None:
         not_found("object_not_found")
     definition = _get_definition(db, run.event_definition_id)
-    return {
-        "run": {
-            "id": str(run.id),
-            "definition_revision": run.definition_revision,
-            "status": run.status.value,
-            "scheduled_start": run.scheduled_start.isoformat() if run.scheduled_start else None,
-            "scheduled_end": run.scheduled_end.isoformat() if run.scheduled_end else None,
-            "theme_ref": run.theme_ref,
-            "language_default": run.language_default,
-            "gamemaster_enabled": run.gamemaster_enabled,
-        },
-        "definition": {
-            "name": definition.name,
-            "story": definition.story,
-        },
-    }
+    return EventResponse(
+        run=EventRunOut(
+            id=str(run.id),
+            definition_revision=run.definition_revision,
+            status=run.status.value,
+            scheduled_start=run.scheduled_start.isoformat() if run.scheduled_start else None,
+            scheduled_end=run.scheduled_end.isoformat() if run.scheduled_end else None,
+            theme_ref=run.theme_ref,
+            language_default=run.language_default,
+            gamemaster_enabled=run.gamemaster_enabled,
+        ),
+        definition=EventDefinitionOut(name=definition.name, story=definition.story),
+    )
+
+
+class PrivacyNoticeResponse(BaseModel):
+    privacy_notice_md: str
 
 
 @router.get("/privacy-notice")
-def get_privacy_notice(db: DbSession = Depends(get_session)) -> dict[str, object]:
+def get_privacy_notice(db: DbSession = Depends(get_session)) -> PrivacyNoticeResponse:
     """api-surface.md §2.1: public, shown at first login — so there is no
     session to resolve a participant's own runs from. Uses the staff
     branch of the §2.6 resolution with `user=None`: the run in
@@ -76,4 +99,4 @@ def get_privacy_notice(db: DbSession = Depends(get_session)) -> dict[str, object
     definition = _get_definition(db, run.event_definition_id)
     if not definition.privacy_notice_md:
         not_found("object_not_found")
-    return {"privacy_notice_md": definition.privacy_notice_md}
+    return PrivacyNoticeResponse(privacy_notice_md=definition.privacy_notice_md)

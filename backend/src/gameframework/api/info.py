@@ -8,15 +8,21 @@ which has no handshake endpoint of its own.
 from importlib.metadata import version
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 router = APIRouter()
 
 SUPPORTED_CONTRACT_RANGE = ">=1.0,<2.0"
 
 
+class InfoResponse(BaseModel):
+    version: str
+    contract_version: str
+
+
 @router.get("/info")
-def info() -> dict[str, str]:
-    return {
-        "version": version("gameframework-backend"),
-        "contract_version": SUPPORTED_CONTRACT_RANGE,
-    }
+def info() -> InfoResponse:
+    return InfoResponse(
+        version=version("gameframework-backend"),
+        contract_version=SUPPORTED_CONTRACT_RANGE,
+    )

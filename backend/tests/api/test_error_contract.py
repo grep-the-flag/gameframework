@@ -1,14 +1,14 @@
 """The error contract where no route raised the error (api-surface.md §1,
 M2-Task-Plan.md Task 2 Step 6): a request the framework's own validation
-refuses (`request_invalid`), a path no route serves (`route_not_found`), a
+refuses (`request_invalid`, `422`) or whose body it cannot parse
+(`request_invalid`, `400`), a path no route serves (`route_not_found`), a
 method the route does not serve (`method_not_allowed`) and an unhandled
 exception (`internal_error`) answer the same RFC 9457 body as a
 `ProblemError` does — stable `code`, the request id in body and header.
 
-Every case drives a real route; none registers one of its own. Only
-`ProblemError` has a handler today, so each case currently receives the
-framework's default body and is expected to fail on the assertion on `code`
-(or, for the `500`, on the body not being a Problem Details document at all).
+Every case drives a real route and registers none of its own, except the
+fall-through for a status outside `400`, `404` and `405`: no real route can
+raise one, so that case calls the handler directly.
 """
 
 import asyncio

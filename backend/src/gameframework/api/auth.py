@@ -62,6 +62,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class LoginResponse(BaseModel):
+    pass
+
+
 @router.post("/login")
 def login(
     request: Request,
@@ -69,7 +73,7 @@ def login(
     response: Response,
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> LoginResponse:
     # api-surface.md §2.2 codes table / ADR-0007 "Failed authentication is
     # answered per source address": checked first and outright, ahead of
     # CSRF — a blocked source gets `429 source_blocked` regardless of
@@ -204,7 +208,11 @@ def login(
         httponly=True,
         samesite="lax",
     )
-    return {}
+    return LoginResponse()
+
+
+class LogoutResponse(BaseModel):
+    pass
 
 
 @router.post("/logout")
@@ -213,18 +221,26 @@ def logout(
     auth: AuthContext = Depends(current_session(*_ANY_AUTHENTICATED_ROLE)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> LogoutResponse:
     db.delete(auth.session)
     db.commit()
     expire_session_cookie(response, settings)
-    return {}
+    return LogoutResponse()
+
+
+class SessionResponse(BaseModel):
+    user_id: str
+    role: str
+    team_id: str | None
+    is_captain: bool
+    must_change_password: bool
 
 
 @router.get("/session")
 def read_session(
     auth: AuthContext = Depends(current_session(*_ANY_AUTHENTICATED_ROLE)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> SessionResponse:
     """api-surface.md §2.2: the caller's team in their current run as
     `team_id` — `null` when they have none, which staff never do — and
     whether they captain it as `is_captain`. Both come from the one
@@ -232,13 +248,17 @@ def read_session(
     names a team the caller's authorization would not recognise.
     """
     team = resolve_current_team(db, auth.user)
-    return {
-        "user_id": str(auth.user.id),
-        "role": auth.user.role.value,
-        "team_id": str(team.id) if team is not None else None,
-        "is_captain": team is not None and team.captain_user_id == auth.user.id,
-        "must_change_password": auth.user.must_change_password,
-    }
+    return SessionResponse(
+        user_id=str(auth.user.id),
+        role=auth.user.role.value,
+        team_id=str(team.id) if team is not None else None,
+        is_captain=team is not None and team.captain_user_id == auth.user.id,
+        must_change_password=auth.user.must_change_password,
+    )
+
+
+class CsrfResponse(BaseModel):
+    csrf_token: str
 
 
 @router.get("/csrf")
@@ -247,7 +267,7 @@ def get_csrf(
     response: Response,
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, str]:
+) -> CsrfResponse:
     """Reads the session through the session-optional resolver rather
     than standing outside the pipeline (ADR-0007 "Session model"): a
     live session binds the token to its own `sid` and runs the restricted
@@ -272,13 +292,17 @@ def get_csrf(
 
     expires_at = datetime.now(UTC) + CSRF_TOKEN_TTL
     token = mint_csrf_token(binding, expires_at, settings)
-    return {"csrf_token": token}
+    return CsrfResponse(csrf_token=token)
 
 
 class PasswordChangeRequest(BaseModel):
     old_password: str
     new_password: str
     otp: str | None = None
+
+
+class PasswordChangeResponse(BaseModel):
+    pass
 
 
 @router.post("/password")
@@ -289,7 +313,7 @@ def change_password(
     auth: AuthContext = Depends(current_session(*_ANY_AUTHENTICATED_ROLE)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> PasswordChangeResponse:
     source = normalize_source(resolve_client_address(request, settings))
 
     if not verify_password(body.old_password, auth.user.password_hash):
@@ -347,4 +371,4 @@ def change_password(
 
     token, _new_session_row = issue_session(db, auth.user, settings)
     set_session_cookie(response, token, settings)
-    return {}
+    return PasswordChangeResponse()

@@ -34,12 +34,16 @@ class IssueOtpRequest(BaseModel):
     user_id: uuid.UUID
 
 
+class IssueOtpResponse(BaseModel):
+    otp: str
+
+
 @router.post("/auth/otp")
 def issue_otp_route(
     body: IssueOtpRequest,
     auth: AuthContext = Depends(current_session(Role.player, Role.admin, Role.gameadmin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, str]:
+) -> IssueOtpResponse:
     """api-surface.md §2.17: `captain / admin, gameadmin` for role, `players
     of own team / any` for scope. `captain` is not a stored role (data-
     model.md §3.1/§3.11), so a `Role.player` caller who captains no team is
@@ -101,14 +105,26 @@ def issue_otp_route(
         details={},
     )
 
-    return {"otp": raw_otp}
+    return IssueOtpResponse(otp=raw_otp)
+
+
+class BlockedAddressOut(BaseModel):
+    id: str
+    address: str
+    failed_attempts: int
+    blocked_at: str | None
+    expires_at: str | None
+
+
+class BlockedAddressListResponse(BaseModel):
+    items: list[BlockedAddressOut]
 
 
 @router.get("/security/blocked-addresses")
 def list_blocked_addresses(
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> BlockedAddressListResponse:
     """api-surface.md §2.16: currently-blocked source addresses, with
     their failure count and expiry. Not the release route's actor —
     §2.17 marks only the release ✅, this route unaudited, being a read.
@@ -125,18 +141,22 @@ def list_blocked_addresses(
         .scalars()
         .all()
     )
-    return {
-        "items": [
-            {
-                "id": str(row.id),
-                "address": row.address,
-                "failed_attempts": row.failed_attempts,
-                "blocked_at": row.blocked_at.isoformat() if row.blocked_at else None,
-                "expires_at": row.expires_at.isoformat() if row.expires_at else None,
-            }
+    return BlockedAddressListResponse(
+        items=[
+            BlockedAddressOut(
+                id=str(row.id),
+                address=row.address,
+                failed_attempts=row.failed_attempts,
+                blocked_at=row.blocked_at.isoformat() if row.blocked_at else None,
+                expires_at=row.expires_at.isoformat() if row.expires_at else None,
+            )
             for row in rows
         ]
-    }
+    )
+
+
+class ReleaseBlockedAddressResponse(BaseModel):
+    pass
 
 
 @router.delete("/security/blocked-addresses/{blocked_id}")
@@ -144,7 +164,7 @@ def release_blocked_address(
     blocked_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> ReleaseBlockedAddressResponse:
     """api-surface.md §2.16: "Release a block early, before it lapses on
     its own." §2.17 marks this route's release ✅ — audited, installation-
     scoped, because `blocked_address` carries no run key of its own
@@ -170,4 +190,4 @@ def release_blocked_address(
         details={},
     )
 
-    return {}
+    return ReleaseBlockedAddressResponse()

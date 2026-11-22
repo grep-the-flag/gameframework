@@ -5,6 +5,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
@@ -28,21 +29,42 @@ router = APIRouter(tags=["challenges"])
 _ALL_ROLES = (Role.admin, Role.gameadmin, Role.player)
 
 
-def _challenge_out(challenge: Challenge) -> dict[str, object]:
+class ChallengeOut(BaseModel):
+    id: str
+    slug: str
+    order: int
+    title: dict[str, str]
+    text: dict[str, str]
+    points: int
+    hint_cost: int
+    hint_cap: int | None
+
+
+class ChallengeListResponse(BaseModel):
+    items: list[ChallengeOut]
+
+
+class StartChallengeResponse(BaseModel):
+    challenge_id: str
+    team_id: str
+    state: str
+
+
+def _challenge_out(challenge: Challenge) -> ChallengeOut:
     """Authored `title`/`text` maps served unchanged — placeholders stay
     unresolved (substitution lands with the port map in M3) and no
     visibility rule hides anything yet (the full suite is M5,
     api-surface.md §3.2)."""
-    return {
-        "id": str(challenge.id),
-        "slug": challenge.slug,
-        "order": challenge.order_num,
-        "title": challenge.title,
-        "text": challenge.text,
-        "points": challenge.points,
-        "hint_cost": challenge.hint_cost,
-        "hint_cap": challenge.hint_cap,
-    }
+    return ChallengeOut(
+        id=str(challenge.id),
+        slug=challenge.slug,
+        order=challenge.order_num,
+        title=challenge.title,
+        text=challenge.text,
+        points=challenge.points,
+        hint_cost=challenge.hint_cost,
+        hint_cap=challenge.hint_cap,
+    )
 
 
 def _get_challenge_for_run(
@@ -58,7 +80,7 @@ def _get_challenge_for_run(
 def list_challenges(
     auth: AuthContext = Depends(current_session(*_ALL_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> ChallengeListResponse:
     run = resolve_current_run(db, auth.user)
     if run is None:
         not_found("object_not_found")
@@ -71,7 +93,7 @@ def list_challenges(
         .scalars()
         .all()
     )
-    return {"items": [_challenge_out(c) for c in challenges]}
+    return ChallengeListResponse(items=[_challenge_out(c) for c in challenges])
 
 
 @router.get("/challenges/{challenge_id}")
@@ -79,7 +101,7 @@ def get_challenge(
     challenge_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(*_ALL_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> ChallengeOut:
     run = resolve_current_run(db, auth.user)
     if run is None:
         not_found("object_not_found")
@@ -93,7 +115,7 @@ def start_challenge_route(
     auth: AuthContext = Depends(current_session(Role.player)),
     db: DbSession = Depends(get_session),
     idempotency_key_header: str | None = Depends(idempotency_key),
-) -> dict[str, object]:
+) -> StartChallengeResponse:
     """api-surface.md §2.7, §2.17: captain or player, own team from the
     session (never a path id), run `running`. `own team` is resolved
     inside `services.challenges.start_challenge` from the caller's live
@@ -136,8 +158,8 @@ def start_challenge_route(
     except ChallengeNotOfferedError as exc:
         raise ProblemError(409, "challenge_not_offered") from exc
 
-    return {
-        "challenge_id": str(row.challenge_id),
-        "team_id": str(row.team_id),
-        "state": row.state.value,
-    }
+    return StartChallengeResponse(
+        challenge_id=str(row.challenge_id),
+        team_id=str(row.team_id),
+        state=row.state.value,
+    )

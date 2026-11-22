@@ -12,7 +12,7 @@ from typing import Annotated, Any, cast
 
 import yaml
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 from starlette.datastructures import UploadFile
@@ -83,9 +83,80 @@ def _get_definition(db: DbSession, definition_id: uuid.UUID) -> EventDefinition:
     return definition
 
 
-def _definition_out(
-    definition: EventDefinition, challenges: list[dict[str, Any]]
-) -> dict[str, Any]:
+class _DocumentOut(BaseModel):
+    """Base of the models built from `existing_challenges_document`'s dicts:
+    a key that service gains later must fail here rather than be filtered
+    out of the body without anyone noticing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MinigameRefOut(_DocumentOut):
+    id: str
+    version: str
+    host_label: str
+
+
+class RewardProduceOut(_DocumentOut):
+    name: str
+    type: str
+
+
+class RewardConsumeOut(_DocumentOut):
+    name: str
+
+
+class RewardsOut(_DocumentOut):
+    produces: list[RewardProduceOut]
+    consumes: list[RewardConsumeOut]
+
+
+class DefinitionChallengeOut(_DocumentOut):
+    id: str
+    order: int
+    title: dict[str, str]
+    text: dict[str, str]
+    minigame: MinigameRefOut
+    points: int
+    hint_cost: int
+    hint_cap: int | None
+    depends_on: list[str]
+    rewards: RewardsOut
+
+
+class DefinitionOut(BaseModel):
+    id: str
+    slug: str
+    source_version: str
+    name: dict[str, str]
+    story: dict[str, str]
+    status: str
+    revision: int
+    unlock_mode: str
+    scoring: str
+    participation_mode: str
+    privacy_notice_md: str
+    challenges: list[DefinitionChallengeOut]
+
+
+class DefinitionSummaryOut(BaseModel):
+    id: str
+    slug: str
+    name: dict[str, str]
+    status: str
+    revision: int
+
+
+class DefinitionListResponse(BaseModel):
+    items: list[DefinitionSummaryOut]
+    next_cursor: str | None
+
+
+class DryRunResponse(BaseModel):
+    errors: list[str]
+
+
+def _definition_out(definition: EventDefinition, challenges: list[dict[str, Any]]) -> DefinitionOut:
     """A field that comes from the event document keeps the document's own
     name — `scoring`, `unlock_mode`, `participation_mode`, `name`,
     `story`, `challenges` — so a client that reads a definition and
@@ -96,30 +167,30 @@ def _definition_out(
     resource's own `id` is already this row's UUID and reusing the name
     for the authoring slug would collide with it.
     """
-    return {
-        "id": str(definition.id),
-        "slug": definition.slug,
-        "source_version": definition.source_version,
-        "name": definition.name,
-        "story": definition.story,
-        "status": definition.status.value,
-        "revision": definition.revision,
-        "unlock_mode": definition.unlock_mode.value,
-        "scoring": definition.scoring_mode.value,
-        "participation_mode": definition.participation_mode.value,
-        "privacy_notice_md": definition.privacy_notice_md,
-        "challenges": challenges,
-    }
+    return DefinitionOut(
+        id=str(definition.id),
+        slug=definition.slug,
+        source_version=definition.source_version,
+        name=definition.name,
+        story=definition.story,
+        status=definition.status.value,
+        revision=definition.revision,
+        unlock_mode=definition.unlock_mode.value,
+        scoring=definition.scoring_mode.value,
+        participation_mode=definition.participation_mode.value,
+        privacy_notice_md=definition.privacy_notice_md,
+        challenges=[DefinitionChallengeOut.model_validate(c) for c in challenges],
+    )
 
 
-def _definition_summary(definition: EventDefinition) -> dict[str, Any]:
-    return {
-        "id": str(definition.id),
-        "slug": definition.slug,
-        "name": definition.name,
-        "status": definition.status.value,
-        "revision": definition.revision,
-    }
+def _definition_summary(definition: EventDefinition) -> DefinitionSummaryOut:
+    return DefinitionSummaryOut(
+        id=str(definition.id),
+        slug=definition.slug,
+        name=definition.name,
+        status=definition.status.value,
+        revision=definition.revision,
+    )
 
 
 @router.get("/event-definitions")
@@ -128,21 +199,21 @@ def list_definitions(
     limit: int = Query(default=50, ge=1, le=200),
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DefinitionListResponse:
     """api-surface.md §1: cursor-paginated; §2.6: "definitions coexist
     freely" — draft, published and archived rows are listed together."""
     page = paginate(db, select(EventDefinition), cursor=cursor, limit=limit)
-    return {
-        "items": [_definition_summary(d) for d in page.items],
-        "next_cursor": page.next_cursor,
-    }
+    return DefinitionListResponse(
+        items=[_definition_summary(d) for d in page.items],
+        next_cursor=page.next_cursor,
+    )
 
 
 @router.post("/event-definitions", status_code=201)
 def create_definition(
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DefinitionOut:
     """api-surface.md §2.6: "Create an empty draft" — no body. Every
     NOT NULL column gets a minimal placeholder; the first `PATCH` is where
     real authoring content arrives. Not audited (§2.17's create/transition
@@ -173,7 +244,7 @@ async def import_definition_route(
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> DefinitionOut:
     """api-surface.md §2.6: "Import from registry URL, repo link, or
     event.yaml upload" — a `multipart/form-data` `file` field carrying a
     raw `event.yaml`, or a JSON body `{"url": "https://..."}` fetched
@@ -231,7 +302,7 @@ def get_definition(
     response: Response,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DefinitionOut:
     """api-surface.md §2.6: "returns the revision as ETag"."""
     definition = _get_definition(db, definition_id)
     response.headers["ETag"] = str(definition.revision)
@@ -290,7 +361,7 @@ def patch_definition(
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> DefinitionOut:
     """api-surface.md §1/§2.6: requires a **current** `If-Match`, `412`
     with the current revision otherwise — checked before anything else, so
     a lost race never reaches validation. While `draft`, whole-document
@@ -345,7 +416,7 @@ def dry_run_definition_route(
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> DryRunResponse:
     """api-surface.md §2.6: the definition-scoped half of Phase 0 — static
     validation over the definition's own pins (the local-artifact/image-
     pull half is M3, out of scope here). No write: `dry_run_definition`
@@ -353,7 +424,7 @@ def dry_run_definition_route(
     `publish`/import would without freezing anything."""
     definition = _get_definition(db, definition_id)
     errors = dry_run_definition(db, definition, settings)
-    return {"errors": errors}
+    return DryRunResponse(errors=errors)
 
 
 @router.post("/event-definitions/{definition_id}/publish")
@@ -362,7 +433,7 @@ def publish_definition_route(
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> dict[str, object]:
+) -> DefinitionOut:
     definition = _get_definition(db, definition_id)
     try:
         publish_definition(db, definition, settings)
@@ -380,7 +451,7 @@ def unpublish_definition_route(
     definition_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DefinitionOut:
     definition = _get_definition(db, definition_id)
     try:
         unpublish_definition(db, definition)
@@ -398,7 +469,7 @@ def archive_definition_route(
     definition_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DefinitionOut:
     definition = _get_definition(db, definition_id)
     try:
         archive_definition(db, definition)
@@ -416,7 +487,7 @@ def unarchive_definition_route(
     definition_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DefinitionOut:
     definition = _get_definition(db, definition_id)
     try:
         unarchive_definition(db, definition)
@@ -432,7 +503,7 @@ def clone_definition_route(
     definition_id: uuid.UUID,
     auth: AuthContext = Depends(current_session(Role.admin)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> DefinitionOut:
     """api-surface.md §2.6/§2.17: creates a definition rather than
     transitioning one — not audited, the matrix's asymmetry."""
     source = _get_definition(db, definition_id)

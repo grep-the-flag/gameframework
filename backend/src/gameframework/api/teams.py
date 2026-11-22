@@ -34,14 +34,27 @@ _STAFF_ROLES = (Role.admin, Role.gameadmin)
 _STAFF_AND_PLAYER_ROLES = (Role.player, Role.admin, Role.gameadmin)
 
 
-def _team_out(team: Team) -> dict[str, object]:
-    return {
-        "id": str(team.id),
-        "event_run_id": str(team.event_run_id),
-        "name": team.name,
-        "handle": team.handle,
-        "captain_user_id": str(team.captain_user_id),
-    }
+class TeamOut(BaseModel):
+    id: str
+    event_run_id: str
+    name: str
+    handle: str
+    captain_user_id: str
+
+
+class TeamListResponse(BaseModel):
+    items: list[TeamOut]
+    next_cursor: str | None
+
+
+def _team_out(team: Team) -> TeamOut:
+    return TeamOut(
+        id=str(team.id),
+        event_run_id=str(team.event_run_id),
+        name=team.name,
+        handle=team.handle,
+        captain_user_id=str(team.captain_user_id),
+    )
 
 
 def _get_run(db: DbSession, run_id: uuid.UUID) -> EventRun:
@@ -82,10 +95,12 @@ def list_teams(
     limit: int = Query(default=50, ge=1, le=200),
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> TeamListResponse:
     """api-surface.md §1: cursor-paginated, never an unbounded list."""
     page = paginate(db, select(Team), cursor=cursor, limit=limit)
-    return {"items": [_team_out(team) for team in page.items], "next_cursor": page.next_cursor}
+    return TeamListResponse(
+        items=[_team_out(team) for team in page.items], next_cursor=page.next_cursor
+    )
 
 
 class CreateTeamRequest(BaseModel):
@@ -100,7 +115,7 @@ def create_team_route(
     body: CreateTeamRequest,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> TeamOut:
     """api-surface.md §2.5: name, members and captain in one transaction."""
     run = _get_run(db, run_id)
 
@@ -133,7 +148,7 @@ def rename_team_route(
     body: RenameTeamRequest,
     auth: AuthContext = Depends(current_session(*_STAFF_AND_PLAYER_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> TeamOut:
     """api-surface.md §2.5, §2.17: `own team` / `any`, open through
     `finished`, refused only at `destroyed` — not audited."""
     team = _get_team(db, team_id)
@@ -159,7 +174,7 @@ def set_members_route(
     body: SetMembersRequest,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> TeamOut:
     """api-surface.md §2.5: correct the member set, `created`-only; an
     optional same-request captain replacement when the new set would drop
     the sitting captain."""
@@ -195,7 +210,7 @@ def set_captain_route(
     body: SetCaptainRequest,
     auth: AuthContext = Depends(current_session(*_STAFF_ROLES)),
     db: DbSession = Depends(get_session),
-) -> dict[str, object]:
+) -> TeamOut:
     """api-surface.md §2.5: open through `finished`, refused only at
     `destroyed`; the replacement must already be a member."""
     team = _get_team(db, team_id)

@@ -73,15 +73,17 @@ def route_idempotent(key: str | None = Depends(idempotency_key)) -> dict[str, st
 
 @pytest.fixture()
 def conventions_router() -> Iterator[None]:
+    # Restores exactly what it found. `include_router` adds an object that
+    # carries no `path`, so a teardown that filters routes by path matches
+    # nothing and the mounted routes outlive the test; and a schema cached
+    # while they were mounted would outlive them too.
+    routes_before = list(app.router.routes)
     app.include_router(_router)
     try:
         yield
     finally:
-        app.router.routes = [
-            route
-            for route in app.router.routes
-            if not getattr(route, "path", "").startswith("/api/v1/_test")
-        ]
+        app.router.routes = routes_before
+        app.openapi_schema = None
 
 
 # --------------------------------------------------------------------------
